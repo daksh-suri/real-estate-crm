@@ -533,8 +533,8 @@ describe('Checkpoint 5 — Contact + Requirement', () => {
       const c2 = await request(app).post('/contacts').set('Authorization', `Bearer ${token}`).send({ name: 'Tgt', email: 'tgt@test.com', phone: '9000000503' });
       await request(app).delete(`/contacts/${c1.body.contact.id}`).set('Authorization', `Bearer ${token}`);
       const res = await request(app).post(`/contacts/${c1.body.contact.id}/merge`).set('Authorization', `Bearer ${token}`).send({ targetId: c2.body.contact.id });
-      // Soft-deleted source is invisible to tenant wrapper → 404
-      expect([400, 404]).toContain(res.status);
+      // Soft-deleted source is already merged/gone → 409
+      expect(res.status).toBe(409);
     });
 
     test('deleted target rejected', async () => {
@@ -547,15 +547,15 @@ describe('Checkpoint 5 — Contact + Requirement', () => {
       expect([400, 404]).toContain(res.status);
     });
 
-    test('repeated merge returns error (404 or 409)', async () => {
+    test('repeated merge returns 409', async () => {
       const token = await login(userAdminA.email, plainAdminA, orgA.id);
       const c1 = await request(app).post('/contacts').set('Authorization', `Bearer ${token}`).send({ name: 'Rep1', email: 'rep1@test.com', phone: '9000000506' });
       const c2 = await request(app).post('/contacts').set('Authorization', `Bearer ${token}`).send({ name: 'Rep2', email: 'rep2@test.com', phone: '9000000507' });
       const r1 = await request(app).post(`/contacts/${c1.body.contact.id}/merge`).set('Authorization', `Bearer ${token}`).send({ targetId: c2.body.contact.id });
       expect(r1.status).toBe(200);
       const r2 = await request(app).post(`/contacts/${c1.body.contact.id}/merge`).set('Authorization', `Bearer ${token}`).send({ targetId: c2.body.contact.id });
-      // Source is soft-deleted after first merge → 404 or 409
-      expect([404, 409]).toContain(r2.status);
+      // Source is soft-deleted after first merge → 409 already merged
+      expect(r2.status).toBe(409);
     });
 
     test('requirements migrated exactly once on merge', async () => {
@@ -583,6 +583,30 @@ describe('Checkpoint 5 — Contact + Requirement', () => {
       const [r1, r2] = await Promise.all([p1, p2]);
       const statuses = [r1.status, r2.status].sort();
       expect(statuses).toEqual([200, 409]);
+    });
+
+    test('concurrent merge X->Y and X->Z: exactly one succeeds, requirements only on winner', async () => {
+      const token = await login(userAdminA.email, plainAdminA, orgA.id);
+      const x = await request(app).post('/contacts').set('Authorization', `Bearer ${token}`).send({ name: 'SrcX', email: 'srcx@test.com', phone: '9000000512' });
+      const y = await request(app).post('/contacts').set('Authorization', `Bearer ${token}`).send({ name: 'TgtY', email: 'tgty@test.com', phone: '9000000513' });
+      const z = await request(app).post('/contacts').set('Authorization', `Bearer ${token}`).send({ name: 'TgtZ', email: 'tgtz@test.com', phone: '9000000514' });
+      const req = await request(app).post(`/contacts/${x.body.contact.id}/requirements`).set('Authorization', `Bearer ${token}`).send({ unitTypePreference: '2BHK', budgetMin: 5000000 });
+      expect(req.status).toBe(201);
+      const pY = request(app).post(`/contacts/${x.body.contact.id}/merge`).set('Authorization', `Bearer ${token}`).send({ targetId: y.body.contact.id });
+      const pZ = request(app).post(`/contacts/${x.body.contact.id}/merge`).set('Authorization', `Bearer ${token}`).send({ targetId: z.body.contact.id });
+      const [rY, rZ] = await Promise.all([pY, pZ]);
+      const statuses = [rY.status, rZ.status].sort();
+      expect(statuses).toEqual([200, 409]);
+      // Winner is whichever returned 200; requirement must live only on the winner
+      const winnerId = rY.status === 200 ? y.body.contact.id : z.body.contact.id;
+      const loserId = rY.status === 200 ? z.body.contact.id : y.body.contact.id;
+      const reqAfter = await request(app).get(`/requirements/${req.body.id}`).set('Authorization', `Bearer ${token}`);
+      expect(reqAfter.body.contactId).toBe(winnerId);
+      const loserReqs = await request(app).get(`/contacts/${loserId}/requirements`).set('Authorization', `Bearer ${token}`);
+      expect(loserReqs.body.find((r) => r.id === req.body.id)).toBeUndefined();
+      // Source is merged (invisible)
+      const getX = await request(app).get(`/contacts/${x.body.contact.id}`).set('Authorization', `Bearer ${token}`);
+      expect(getX.status).toBe(404);
     });
   });
 

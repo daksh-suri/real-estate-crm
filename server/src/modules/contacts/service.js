@@ -255,6 +255,36 @@ async function mergeContacts({ tenantPrisma, organizationId, survivorId, duplica
     tenantPrisma.contact.findUnique({ where: { id: duplicateId } }),
   ]);
   if (!survivor || !duplicate) {
+    // Tenant reads filter out soft-deleted rows, so a null here is ambiguous:
+    // it can mean "never existed / other tenant" OR "already merged/soft-deleted".
+    // Use a raw lookup to distinguish so a repeated merge returns 409 (not 404).
+    const raw = tenantPrisma._raw;
+    if (!duplicate) {
+      const rawDup = await raw.contact.findUnique({ where: { id: duplicateId } });
+      if (rawDup && rawDup.organizationId === organizationId && rawDup.deletedAt) {
+        const err = new Error('This contact has already been merged');
+        err.statusCode = 409;
+        throw err;
+      }
+      if (rawDup && rawDup.organizationId !== organizationId) {
+        const err = new Error('Cross-tenant merge not allowed');
+        err.statusCode = 403;
+        throw err;
+      }
+    }
+    if (!survivor) {
+      const rawSurv = await raw.contact.findUnique({ where: { id: survivorId } });
+      if (rawSurv && rawSurv.organizationId === organizationId && rawSurv.deletedAt) {
+        const err = new Error('Cannot merge into a soft-deleted contact');
+        err.statusCode = 400;
+        throw err;
+      }
+      if (rawSurv && rawSurv.organizationId !== organizationId) {
+        const err = new Error('Cross-tenant merge not allowed');
+        err.statusCode = 403;
+        throw err;
+      }
+    }
     const err = new Error('One or both contacts not found');
     err.statusCode = 404;
     throw err;
@@ -271,43 +301,79 @@ async function mergeContacts({ tenantPrisma, organizationId, survivorId, duplica
     throw err;
   }
 
-  // Transaction: migrate requirements from duplicate to survivor, mark duplicate as merged (soft delete), update PossibleDuplicate statuses
-  const result = await tenantPrisma.$transaction(async (tx) => {
-    // Re-check duplicate state inside transaction to prevent concurrent merge race.
-    // Two concurrent X→Y requests both pass pre-tx check; only one should win.
-    // Use raw tx to bypass tenant wrapper's deletedAt filter — we need to see soft-deleted state.
-    const freshDuplicate = await tx._raw.contact.findUnique({ where: { id: duplicateId } });
-    if (!freshDuplicate || freshDuplicate.deletedAt) {
-      const err = new Error('This contact has already been merged');
-      err.statusCode = 409;
-      throw err;
-    }
+  // Transaction: lock the source Contact row BEFORE the final mergeable check,
+  // then re-read inside the lock, migrate requirements, soft-delete source,
+  // update PossibleDuplicate statuses. The competing transaction blocks on the
+  // lock; after acquiring it, it observes the completed merge and returns 409.
+  const result = await tenantPrisma.$transaction(
+    async (tx) => {
+      // Acquire the authoritative row-level lock on the source contact.
+      // Plain findUnique does NOT lock — without FOR UPDATE both concurrent
+      // transactions read deletedAt=null before either commits (READ COMMITTED).
+      const lockedRows = await tx._raw.$queryRaw`
+        SELECT "id", "organizationId", "deletedAt"
+        FROM "contacts"
+        WHERE "id" = ${duplicateId}
+        FOR UPDATE
+      `;
+      const lockedDup = lockedRows && lockedRows[0];
+      if (!lockedDup) {
+        const err = new Error('One or both contacts not found');
+        err.statusCode = 404;
+        throw err;
+      }
+      if (lockedDup.organizationId !== organizationId) {
+        const err = new Error('Cross-tenant merge not allowed');
+        err.statusCode = 403;
+        throw err;
+      }
+      if (lockedDup.deletedAt) {
+        const err = new Error('This contact has already been merged');
+        err.statusCode = 409;
+        throw err;
+      }
 
-    // Move requirements
-    await tx.requirement.updateMany({
-      where: { contactId: duplicateId, organizationId },
-      data: { contactId: survivorId },
-    });
-    // Soft delete duplicate, store merge metadata in consentSource? For V1, use deletedAt + notes
-    const mergedDuplicate = await tx.contact.update({
-      where: { id: duplicateId },
-      data: { deletedAt: new Date(), consentSource: `merged_into:${survivorId}` },
-    });
-    // Update PossibleDuplicate statuses for this pair to CONFIRMED_SAME
-    // Find possible duplicates involving these two
-    await tx.possibleDuplicate.updateMany({
-      where: {
-        organizationId,
-        OR: [
-          { contactAId: survivorId, contactBId: duplicateId },
-          { contactAId: duplicateId, contactBId: survivorId },
-        ],
-      },
-      data: { status: 'CONFIRMED_SAME' },
-    });
-    // Also update any other PossibleDuplicates where duplicate was involved to reflect merge? For V1, keep simple
-    return { survivor, duplicate: mergedDuplicate };
-  });
+      // Re-validate the survivor inside the same transaction (raw read so a
+      // concurrently soft-deleted survivor is visible instead of filtered).
+      const freshSurvivor = await tx._raw.contact.findUnique({ where: { id: survivorId } });
+      if (!freshSurvivor || freshSurvivor.organizationId !== organizationId) {
+        const err = new Error('One or both contacts not found');
+        err.statusCode = 404;
+        throw err;
+      }
+      if (freshSurvivor.deletedAt) {
+        const err = new Error('Cannot merge into a soft-deleted contact');
+        err.statusCode = 400;
+        throw err;
+      }
+
+      // Move requirements
+      await tx.requirement.updateMany({
+        where: { contactId: duplicateId, organizationId },
+        data: { contactId: survivorId },
+      });
+      // Soft delete duplicate, store merge metadata in consentSource? For V1, use deletedAt + notes
+      const mergedDuplicate = await tx.contact.update({
+        where: { id: duplicateId },
+        data: { deletedAt: new Date(), consentSource: `merged_into:${survivorId}` },
+      });
+      // Update PossibleDuplicate statuses for this pair to CONFIRMED_SAME
+      // Find possible duplicates involving these two
+      await tx.possibleDuplicate.updateMany({
+        where: {
+          organizationId,
+          OR: [
+            { contactAId: survivorId, contactBId: duplicateId },
+            { contactAId: duplicateId, contactBId: survivorId },
+          ],
+        },
+        data: { status: 'CONFIRMED_SAME' },
+      });
+      // Also update any other PossibleDuplicates where duplicate was involved to reflect merge? For V1, keep simple
+      return { survivor, duplicate: mergedDuplicate };
+    },
+    { timeout: 10000, maxWait: 5000 }
+  );
 
   return result;
 }
