@@ -1,5 +1,16 @@
 // Prisma schema for Real Estate CRM
 // Primary Source of Truth: docs/CRM_Implementation_Blueprint_Phase3.md
+// Checkpoint 2 — Database Foundation & Tenant Scoping
+//
+// TENANT CLASSIFICATION
+// ---------------------
+// GLOBAL (no organizationId): Permission, Organization (is the tenant itself)
+// TENANT-SCOPED (organizationId NOT NULL, indexed, FK to Organization):
+//   Role, Team, User, RolePermission, TeamMembership
+//
+// Tenant scoping is enforced centrally via server/src/lib/prisma.js and
+// server/src/lib/tenant.js — see those files for the fail-closed extension.
+// Do NOT rely on manual where: { organizationId } in service code.
 
 generator client {
   provider = "prisma-client-js"
@@ -10,12 +21,163 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// System initialization model used solely to establish the Prisma CLI,
-// Client generation, and migration workflow for Checkpoint 1.
-// Core tenant and domain models will be added in Checkpoint 2 (Database Foundation).
-model SystemInit {
-  id        String   @id @default(uuid())
-  createdAt DateTime @default(now())
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
 
-  @@map("_system_init")
+enum UserStatus {
+  ACTIVE
+  ON_LEAVE
+  DEACTIVATED
+}
+
+enum DataScope {
+  OWN
+  TEAM
+  PROJECT
+  ORGANIZATION
+}
+
+// ---------------------------------------------------------------------------
+// GLOBAL — Organization is the tenant root (not tenant-scoped itself)
+// ---------------------------------------------------------------------------
+
+model Organization {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Tenant-owned children — onDelete Cascade is deliberate: tenant data has
+  // no meaning without its organization. Operational history is preserved via
+  // soft-delete (User.deletedAt) and audit logs in later checkpoints, not by
+  // retaining orphaned tenant rows. Tier 1 financial/legal immutability
+  // (future checkpoints) will use Restrict/SetNull, never Cascade.
+  users           User[]
+  teams           Team[]
+  roles           Role[]
+  rolePermissions RolePermission[]
+  teamMemberships TeamMembership[]
+
+  @@map("organizations")
+}
+
+// ---------------------------------------------------------------------------
+// GLOBAL — Permission catalogue (not tenant-scoped)
+// ---------------------------------------------------------------------------
+
+model Permission {
+  id       String @id @default(uuid())
+  resource String
+  action   String
+
+  rolePermissions RolePermission[]
+
+  @@unique([resource, action])
+  @@map("permissions")
+}
+
+// ---------------------------------------------------------------------------
+// TENANT-SCOPED
+// ---------------------------------------------------------------------------
+
+model Role {
+  id             String   @id @default(uuid())
+  organizationId String
+  name           String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  users        User[]
+  permissions  RolePermission[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+  @@map("roles")
+}
+
+model Team {
+  id             String   @id @default(uuid())
+  organizationId String
+  name           String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  memberships  TeamMembership[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+  @@map("teams")
+}
+
+model User {
+  id                         String     @id @default(uuid())
+  organizationId             String
+  name                       String
+  email                      String
+  passwordHash               String?
+  roleId                     String?
+  status                     UserStatus @default(ACTIVE)
+  deactivatedAt              DateTime?
+  reassignmentCompletedAt    DateTime?
+  deletedAt                  DateTime?
+  createdAt                  DateTime   @default(now())
+  updatedAt                  DateTime   @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  role         Role?            @relation(fields: [roleId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  memberships  TeamMembership[]
+
+  // Tenant-scoped unique: same email can exist in different organizations,
+  // but not twice within one organization.
+  @@unique([organizationId, email])
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@index([roleId])
+  @@map("users")
+}
+
+// Join table — tenant-scoped via organizationId. The organizationId column
+// is required so the tenant extension can filter it, and so we can enforce
+// cross-tenant membership invariants (user.organizationId == team.organizationId == membership.organizationId)
+// at the service layer inside a transaction. The PK is a surrogate id plus a
+// unique(userId, teamId) to prevent duplicate memberships; the surrogate id
+// keeps the model consistent with other tenant entities for extension handling
+// (all tenant models have a single uuid PK).
+model TeamMembership {
+  id             String   @id @default(uuid())
+  userId         String
+  teamId         String
+  organizationId String
+  createdAt      DateTime @default(now())
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  team         Team         @relation(fields: [teamId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([userId, teamId])
+  @@index([organizationId])
+  @@index([userId])
+  @@index([teamId])
+  @@map("team_memberships")
+}
+
+model RolePermission {
+  id             String    @id @default(uuid())
+  organizationId String
+  roleId         String
+  permissionId   String
+  scope          DataScope
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([roleId, permissionId, scope])
+  @@index([organizationId])
+  @@index([roleId])
+  @@index([permissionId])
+  @@map("role_permissions")
 }
