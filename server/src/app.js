@@ -8,6 +8,9 @@ const config = require('./config');
 const healthRoute = require('./routes/health');
 const authRoutes = require('./modules/auth/routes');
 const demoAuthzRoutes = require('./modules/authorization/demoRoutes');
+const organizationRoutes = require('./modules/organizations/routes');
+const teamRoutes = require('./modules/teams/routes');
+const userTeamsRoutes = require('./modules/teams/userTeamsRoutes');
 const notFoundHandler = require('./middleware/notFoundHandler');
 const errorHandler = require('./middleware/errorHandler');
 
@@ -35,6 +38,9 @@ app.use(express.urlencoded({ extended: true }));
 // Core foundation routes
 app.use('/health', healthRoute);
 app.use('/auth', authRoutes);
+app.use('/organizations', organizationRoutes);
+app.use('/teams', teamRoutes);
+app.use('/users', userTeamsRoutes);
 app.use('/protected', demoAuthzRoutes);
 
 // 404 handler

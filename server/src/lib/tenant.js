@@ -156,8 +156,8 @@ function wrapModel(modelName, rawModel, organizationId) {
     findMany: async (args = {}) => {
       assertTenantContext(organizationId);
       const where = injectWhere(args.where, organizationId);
-      // Soft-delete: exclude deletedAt not null for User unless explicitly queried
-      if (modelName === 'user' && where.deletedAt === undefined) {
+      // Soft-delete: exclude deletedAt not null for User and Team unless explicitly queried
+      if ((modelName === 'user' || modelName === 'team') && where.deletedAt === undefined) {
         where.deletedAt = null;
       }
       return rawModel.findMany({ ...args, where });
@@ -166,7 +166,7 @@ function wrapModel(modelName, rawModel, organizationId) {
     findFirst: async (args = {}) => {
       assertTenantContext(organizationId);
       const where = injectWhere(args.where, organizationId);
-      if (modelName === 'user' && where.deletedAt === undefined) {
+      if ((modelName === 'user' || modelName === 'team') && where.deletedAt === undefined) {
         where.deletedAt = null;
       }
       return rawModel.findFirst({ ...args, where });
@@ -175,7 +175,7 @@ function wrapModel(modelName, rawModel, organizationId) {
     findFirstOrThrow: async (args = {}) => {
       assertTenantContext(organizationId);
       const where = injectWhere(args.where, organizationId);
-      if (modelName === 'user' && where.deletedAt === undefined) {
+      if ((modelName === 'user' || modelName === 'team') && where.deletedAt === undefined) {
         where.deletedAt = null;
       }
       return rawModel.findFirstOrThrow({ ...args, where });
@@ -190,7 +190,7 @@ function wrapModel(modelName, rawModel, organizationId) {
       if (!where) throw new TenantContextError('findUnique requires where');
       assertWhereTenantMatches(where, organizationId);
       const tenantWhere = injectWhere(where, organizationId);
-      if (modelName === 'user' && tenantWhere.deletedAt === undefined) {
+      if ((modelName === 'user' || modelName === 'team') && tenantWhere.deletedAt === undefined) {
         tenantWhere.deletedAt = null;
       }
       // Use findFirst with tenant filter — valid for any where shape.
@@ -203,7 +203,7 @@ function wrapModel(modelName, rawModel, organizationId) {
       if (!where) throw new TenantContextError('findUniqueOrThrow requires where');
       assertWhereTenantMatches(where, organizationId);
       const tenantWhere = injectWhere(where, organizationId);
-      if (modelName === 'user' && tenantWhere.deletedAt === undefined) {
+      if ((modelName === 'user' || modelName === 'team') && tenantWhere.deletedAt === undefined) {
         tenantWhere.deletedAt = null;
       }
       return rawModel.findFirstOrThrow({ ...args, where: tenantWhere });
@@ -212,7 +212,7 @@ function wrapModel(modelName, rawModel, organizationId) {
     count: async (args = {}) => {
       assertTenantContext(organizationId);
       const where = injectWhere(args.where, organizationId);
-      if (modelName === 'user' && where.deletedAt === undefined) {
+      if ((modelName === 'user' || modelName === 'team') && where.deletedAt === undefined) {
         where.deletedAt = null;
       }
       return rawModel.count({ ...args, where });
