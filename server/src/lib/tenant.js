@@ -175,6 +175,20 @@ async function assertPossibleDuplicateIntegrity(organizationId, data, rawPrisma)
   }
 }
 
+async function assertUnitProjectIntegrity(organizationId, data, rawPrisma) {
+  if (!data.projectId) return;
+  const project = await rawPrisma.project.findUnique({ where: { id: data.projectId } });
+  if (!project) throw new CrossTenantError(`Unit projectId ${data.projectId} does not exist`);
+  if (project.organizationId !== organizationId) {
+    throw new CrossTenantError(
+      `Cross-tenant unit: project ${data.projectId} belongs to org ${project.organizationId}, not ${organizationId}`
+    );
+  }
+  if (project.deletedAt) {
+    throw new CrossTenantError(`Unit cannot be attached to soft-deleted project ${data.projectId}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Wrap a single model delegate with tenant logic
 // ---------------------------------------------------------------------------
@@ -187,7 +201,7 @@ function wrapModel(modelName, rawModel, organizationId) {
       assertTenantContext(organizationId);
       const where = injectWhere(args.where, organizationId);
       // Soft-delete: exclude deletedAt not null for User, Team, Contact, Requirement unless explicitly queried
-      if ((['user', 'team', 'contact', 'requirement'].includes(modelName)) && where.deletedAt === undefined) {
+      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit'].includes(modelName)) && where.deletedAt === undefined) {
         where.deletedAt = null;
       }
       return rawModel.findMany({ ...args, where });
@@ -196,7 +210,7 @@ function wrapModel(modelName, rawModel, organizationId) {
     findFirst: async (args = {}) => {
       assertTenantContext(organizationId);
       const where = injectWhere(args.where, organizationId);
-      if ((['user', 'team', 'contact', 'requirement'].includes(modelName)) && where.deletedAt === undefined) {
+      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit'].includes(modelName)) && where.deletedAt === undefined) {
         where.deletedAt = null;
       }
       return rawModel.findFirst({ ...args, where });
@@ -205,7 +219,7 @@ function wrapModel(modelName, rawModel, organizationId) {
     findFirstOrThrow: async (args = {}) => {
       assertTenantContext(organizationId);
       const where = injectWhere(args.where, organizationId);
-      if ((['user', 'team', 'contact', 'requirement'].includes(modelName)) && where.deletedAt === undefined) {
+      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit'].includes(modelName)) && where.deletedAt === undefined) {
         where.deletedAt = null;
       }
       return rawModel.findFirstOrThrow({ ...args, where });
@@ -220,7 +234,7 @@ function wrapModel(modelName, rawModel, organizationId) {
       if (!where) throw new TenantContextError('findUnique requires where');
       assertWhereTenantMatches(where, organizationId);
       const tenantWhere = injectWhere(where, organizationId);
-      if ((['user', 'team', 'contact', 'requirement'].includes(modelName)) && tenantWhere.deletedAt === undefined) {
+      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit'].includes(modelName)) && tenantWhere.deletedAt === undefined) {
         tenantWhere.deletedAt = null;
       }
       // Use findFirst with tenant filter — valid for any where shape.
@@ -233,7 +247,7 @@ function wrapModel(modelName, rawModel, organizationId) {
       if (!where) throw new TenantContextError('findUniqueOrThrow requires where');
       assertWhereTenantMatches(where, organizationId);
       const tenantWhere = injectWhere(where, organizationId);
-      if ((['user', 'team', 'contact', 'requirement'].includes(modelName)) && tenantWhere.deletedAt === undefined) {
+      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit'].includes(modelName)) && tenantWhere.deletedAt === undefined) {
         tenantWhere.deletedAt = null;
       }
       return rawModel.findFirstOrThrow({ ...args, where: tenantWhere });
@@ -242,7 +256,7 @@ function wrapModel(modelName, rawModel, organizationId) {
     count: async (args = {}) => {
       assertTenantContext(organizationId);
       const where = injectWhere(args.where, organizationId);
-      if ((['user', 'team', 'contact', 'requirement'].includes(modelName)) && where.deletedAt === undefined) {
+      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit'].includes(modelName)) && where.deletedAt === undefined) {
         where.deletedAt = null;
       }
       return rawModel.count({ ...args, where });
@@ -285,6 +299,9 @@ function wrapModel(modelName, rawModel, organizationId) {
       }
       if (modelName === 'possibleDuplicate') {
         await assertPossibleDuplicateIntegrity(organizationId, data, prisma);
+      }
+      if (modelName === 'unit') {
+        await assertUnitProjectIntegrity(organizationId, data, prisma);
       }
 
       return rawModel.create({ ...args, data });
@@ -345,6 +362,9 @@ function wrapModel(modelName, rawModel, organizationId) {
         const contactBId = args.data.contactBId !== undefined ? args.data.contactBId : existing.contactBId;
         await assertPossibleDuplicateIntegrity(organizationId, { contactAId, contactBId }, prisma);
       }
+      if (modelName === 'unit' && args.data && args.data.projectId !== undefined) {
+        await assertUnitProjectIntegrity(organizationId, { projectId: args.data.projectId }, prisma);
+      }
 
       // Perform update using the record's PK (id) which is globally unique and valid.
       // This avoids generating an invalid where: { id, organizationId } for Prisma update.
@@ -404,6 +424,9 @@ function wrapModel(modelName, rawModel, organizationId) {
           const contactBId = args.update.contactBId !== undefined ? args.update.contactBId : existing.contactBId;
           await assertPossibleDuplicateIntegrity(organizationId, { contactAId, contactBId }, prisma);
         }
+        if (modelName === 'unit' && args.update.projectId !== undefined) {
+          await assertUnitProjectIntegrity(organizationId, { projectId: args.update.projectId }, prisma);
+        }
         const whereForUpdate = { id: existing.id };
         return rawModel.update({ where: whereForUpdate, data: args.update });
       }
@@ -422,6 +445,9 @@ function wrapModel(modelName, rawModel, organizationId) {
       }
       if (modelName === 'possibleDuplicate') {
         await assertPossibleDuplicateIntegrity(organizationId, create, prisma);
+      }
+      if (modelName === 'unit') {
+        await assertUnitProjectIntegrity(organizationId, create, prisma);
       }
       return rawModel.create({ data: create });
     },
@@ -472,6 +498,8 @@ function createTenantPrisma(organizationId) {
     contact: wrapModel('contact', prisma.contact, organizationId),
     requirement: wrapModel('requirement', prisma.requirement, organizationId),
     possibleDuplicate: wrapModel('possibleDuplicate', prisma.possibleDuplicate, organizationId),
+    project: wrapModel('project', prisma.project, organizationId),
+    unit: wrapModel('unit', prisma.unit, organizationId),
 
     // Preserve raw access for advanced needs, but clearly marked as unscoped
     _raw: prisma,
@@ -502,6 +530,8 @@ function createTenantPrisma(organizationId) {
             contact: wrapModel('contact', rawTx.contact, organizationId),
             requirement: wrapModel('requirement', rawTx.requirement, organizationId),
             possibleDuplicate: wrapModel('possibleDuplicate', rawTx.possibleDuplicate, organizationId),
+            project: wrapModel('project', rawTx.project, organizationId),
+            unit: wrapModel('unit', rawTx.unit, organizationId),
             _raw: rawTx,
             _organizationId: organizationId,
           };

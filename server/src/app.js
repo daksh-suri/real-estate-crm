@@ -13,6 +13,7 @@ const teamRoutes = require('./modules/teams/routes');
 const userTeamsRoutes = require('./modules/teams/userTeamsRoutes');
 const contactRoutes = require('./modules/contacts/routes');
 const requirementRoutes = require('./modules/requirements/routes');
+const { projectRouter, unitRouter } = require('./modules/property/routes');
 const notFoundHandler = require('./middleware/notFoundHandler');
 const errorHandler = require('./middleware/errorHandler');
 
@@ -45,6 +46,8 @@ app.use('/teams', teamRoutes);
 app.use('/users', userTeamsRoutes);
 app.use('/contacts', contactRoutes);
 app.use('/requirements', requirementRoutes);
+app.use('/projects', projectRouter);
+app.use('/units', unitRouter);
 app.use('/protected', demoAuthzRoutes);
 
 // 404 handler

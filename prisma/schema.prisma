@@ -1,13 +1,13 @@
 // Prisma schema for Real Estate CRM
 // Primary Source of Truth: docs/CRM_Implementation_Blueprint_Phase3.md
-// Checkpoint 5 — Contact + Requirement
+// Checkpoint 6 — Property Hierarchy (Project → Unit)
 //
 // TENANT CLASSIFICATION
 // ---------------------
 // GLOBAL (no organizationId): Permission, Organization (is the tenant itself)
 // TENANT-SCOPED (organizationId NOT NULL, indexed, FK to Organization):
 //   Role, Team, User, RolePermission, TeamMembership, RefreshToken,
-//   Contact, Requirement, PossibleDuplicate
+//   Contact, Requirement, PossibleDuplicate, Project, Unit
 //
 // Tenant scoping is enforced centrally via server/src/lib/prisma.js and
 // server/src/lib/tenant.js — see those files for the fail-closed extension.
@@ -50,6 +50,22 @@ enum PossibleDuplicateStatus {
   CONFIRMED_DIFFERENT
 }
 
+enum ProjectStatus {
+  PLANNED
+  ACTIVE
+  ON_HOLD
+  COMPLETED
+  CANCELLED
+}
+
+enum UnitAvailability {
+  AVAILABLE
+  ON_HOLD
+  RESERVED
+  BOOKED
+  BLOCKED
+}
+
 // ---------------------------------------------------------------------------
 // GLOBAL — Organization is the tenant root (not tenant-scoped itself)
 // ---------------------------------------------------------------------------
@@ -74,6 +90,8 @@ model Organization {
   contacts            Contact[]
   requirements        Requirement[]
   possibleDuplicates  PossibleDuplicate[]
+  projects            Project[]
+  units               Unit[]
 
   @@map("organizations")
 }
@@ -197,6 +215,9 @@ model Requirement {
   unitTypePreference    String?
   budgetMin             Decimal?  @db.Decimal(15, 2)
   budgetMax             Decimal?  @db.Decimal(15, 2)
+  // Phase 3 specifies preferredProjectIds[] (not a join table). Every ID is
+  // validated at the service layer to reference an existing, non-deleted
+  // Project in the same organization — cross-tenant references are rejected.
   preferredProjectIds   String[]  @default([])
   possessionPreference  String?
   notes                 String?   @db.Text
@@ -235,6 +256,59 @@ model PossibleDuplicate {
   @@index([contactBId])
   @@index([status])
   @@map("possible_duplicates")
+}
+
+// ---------------------------------------------------------------------------
+// TENANT-SCOPED — Property Hierarchy (Checkpoint 6)
+// Organization → Project → Unit. Phase 3: Project (name, location, status),
+// Unit (projectId, identifier, totalCost, availabilityStatus).
+// Requirement.preferredProjectIds stays a String[] per Phase 3 — validated
+// at the service layer to reference same-org, non-deleted Projects.
+// ---------------------------------------------------------------------------
+
+model Project {
+  id             String        @id @default(uuid())
+  organizationId String
+  name           String
+  location       String?
+  status         ProjectStatus @default(ACTIVE)
+  deletedAt      DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  units        Unit[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@index([deletedAt])
+  @@map("projects")
+}
+
+model Unit {
+  id                 String           @id @default(uuid())
+  organizationId     String
+  projectId          String
+  identifier         String
+  totalCost          Decimal?         @db.Decimal(15, 2)
+  availabilityStatus UnitAvailability @default(AVAILABLE)
+  deletedAt          DateTime?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  // Restrict (not Cascade): a Project with Units must never be physically
+  // destroyed — Units are future booking history. Lifecycle is soft-delete.
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([projectId, identifier])
+  @@index([organizationId])
+  @@index([projectId])
+  @@index([organizationId, projectId])
+  @@index([organizationId, availabilityStatus])
+  @@index([deletedAt])
+  @@map("units")
 }
 
 model User {
