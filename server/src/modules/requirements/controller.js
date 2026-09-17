@@ -64,7 +64,12 @@ async function update(req, res, next) {
   try {
     const { requirementId } = validate(requirementIdParamSchema, req.params);
     const data = validate(updateRequirementSchema, req.body);
-    const updated = await service.updateRequirement({ tenantPrisma: req.tenantPrisma, requirementId, data });
+    const updated = await service.updateRequirement({
+      tenantPrisma: req.tenantPrisma,
+      organizationId: req.auth.organizationId,
+      requirementId,
+      data,
+    });
     return res.json(updated);
   } catch (err) {
     return next(err);
