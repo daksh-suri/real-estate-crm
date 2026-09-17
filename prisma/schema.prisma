@@ -1,0 +1,21 @@
+// Prisma schema for Real Estate CRM
+// Primary Source of Truth: docs/CRM_Implementation_Blueprint_Phase3.md
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// System initialization model used solely to establish the Prisma CLI,
+// Client generation, and migration workflow for Checkpoint 1.
+// Core tenant and domain models will be added in Checkpoint 2 (Database Foundation).
+model SystemInit {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+
+  @@map("_system_init")
+}
