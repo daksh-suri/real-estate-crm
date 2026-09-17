@@ -6,7 +6,7 @@
 // ---------------------
 // GLOBAL (no organizationId): Permission, Organization (is the tenant itself)
 // TENANT-SCOPED (organizationId NOT NULL, indexed, FK to Organization):
-//   Role, Team, User, RolePermission, TeamMembership
+//   Role, Team, User, RolePermission, TeamMembership, RefreshToken
 //
 // Tenant scoping is enforced centrally via server/src/lib/prisma.js and
 // server/src/lib/tenant.js — see those files for the fail-closed extension.
@@ -58,8 +58,36 @@ model Organization {
   roles           Role[]
   rolePermissions RolePermission[]
   teamMemberships TeamMembership[]
+  refreshTokens   RefreshToken[]
 
   @@map("organizations")
+}
+
+// ---------------------------------------------------------------------------
+// TENANT-SCOPED — RefreshToken lifecycle (JWT refresh rotation)
+// ---------------------------------------------------------------------------
+
+model RefreshToken {
+  id             String    @id @default(uuid())
+  userId         String
+  organizationId String
+  tokenHash      String    @unique
+  createdAt      DateTime  @default(now())
+  expiresAt      DateTime
+  revokedAt      DateTime?
+  replacedById   String?   @unique
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  replacedBy   RefreshToken? @relation("TokenRotation", fields: [replacedById], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  replaces     RefreshToken? @relation("TokenRotation")
+
+  @@index([userId])
+  @@index([organizationId])
+  @@index([tokenHash])
+  @@index([expiresAt])
+  @@index([userId, organizationId])
+  @@map("refresh_tokens")
 }
 
 // ---------------------------------------------------------------------------
@@ -129,6 +157,7 @@ model User {
   organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   role         Role?            @relation(fields: [roleId], references: [id], onDelete: SetNull, onUpdate: Cascade)
   memberships  TeamMembership[]
+  refreshTokens RefreshToken[]
 
   // Tenant-scoped unique: same email can exist in different organizations,
   // but not twice within one organization.

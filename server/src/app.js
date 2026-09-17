@@ -2,9 +2,12 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
+const cookieParser = require('cookie-parser');
 
 const config = require('./config');
 const healthRoute = require('./routes/health');
+const authRoutes = require('./modules/auth/routes');
+const demoAuthzRoutes = require('./modules/authorization/demoRoutes');
 const notFoundHandler = require('./middleware/notFoundHandler');
 const errorHandler = require('./middleware/errorHandler');
 
@@ -24,12 +27,15 @@ if (!config.isTest) {
   app.use(morgan('dev'));
 }
 
-// Body parsing middleware
+// Body & cookie parsing middleware
+app.use(cookieParser());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Core foundation routes
 app.use('/health', healthRoute);
+app.use('/auth', authRoutes);
+app.use('/protected', demoAuthzRoutes);
 
 // 404 handler
 app.use(notFoundHandler);
