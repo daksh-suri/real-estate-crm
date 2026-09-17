@@ -145,6 +145,36 @@ async function assertRolePermissionTenantIntegrity(organizationId, data, rawPris
   // permission is global, no org check
 }
 
+async function assertRequirementContactIntegrity(organizationId, data, rawPrisma) {
+  if (!data.contactId) return;
+  const contact = await rawPrisma.contact.findUnique({ where: { id: data.contactId } });
+  if (!contact) throw new CrossTenantError(`Requirement contactId ${data.contactId} does not exist`);
+  if (contact.organizationId !== organizationId) {
+    throw new CrossTenantError(
+      `Cross-tenant requirement: contact ${data.contactId} belongs to org ${contact.organizationId}, not ${organizationId}`
+    );
+  }
+  if (contact.deletedAt) {
+    throw new CrossTenantError(`Requirement cannot be attached to soft-deleted contact ${data.contactId}`);
+  }
+}
+
+async function assertPossibleDuplicateIntegrity(organizationId, data, rawPrisma) {
+  if (!data.contactAId || !data.contactBId) return;
+  if (data.contactAId === data.contactBId) {
+    throw new CrossTenantError('PossibleDuplicate contactAId and contactBId must be different');
+  }
+  const [a, b] = await Promise.all([
+    rawPrisma.contact.findUnique({ where: { id: data.contactAId } }),
+    rawPrisma.contact.findUnique({ where: { id: data.contactBId } }),
+  ]);
+  if (!a) throw new CrossTenantError(`PossibleDuplicate contactAId ${data.contactAId} does not exist`);
+  if (!b) throw new CrossTenantError(`PossibleDuplicate contactBId ${data.contactBId} does not exist`);
+  if (a.organizationId !== organizationId || b.organizationId !== organizationId) {
+    throw new CrossTenantError('Cross-tenant PossibleDuplicate: contacts must belong to same organization');
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Wrap a single model delegate with tenant logic
 // ---------------------------------------------------------------------------
@@ -156,8 +186,8 @@ function wrapModel(modelName, rawModel, organizationId) {
     findMany: async (args = {}) => {
       assertTenantContext(organizationId);
       const where = injectWhere(args.where, organizationId);
-      // Soft-delete: exclude deletedAt not null for User and Team unless explicitly queried
-      if ((modelName === 'user' || modelName === 'team') && where.deletedAt === undefined) {
+      // Soft-delete: exclude deletedAt not null for User, Team, Contact, Requirement unless explicitly queried
+      if ((['user', 'team', 'contact', 'requirement'].includes(modelName)) && where.deletedAt === undefined) {
         where.deletedAt = null;
       }
       return rawModel.findMany({ ...args, where });
@@ -166,7 +196,7 @@ function wrapModel(modelName, rawModel, organizationId) {
     findFirst: async (args = {}) => {
       assertTenantContext(organizationId);
       const where = injectWhere(args.where, organizationId);
-      if ((modelName === 'user' || modelName === 'team') && where.deletedAt === undefined) {
+      if ((['user', 'team', 'contact', 'requirement'].includes(modelName)) && where.deletedAt === undefined) {
         where.deletedAt = null;
       }
       return rawModel.findFirst({ ...args, where });
@@ -175,7 +205,7 @@ function wrapModel(modelName, rawModel, organizationId) {
     findFirstOrThrow: async (args = {}) => {
       assertTenantContext(organizationId);
       const where = injectWhere(args.where, organizationId);
-      if ((modelName === 'user' || modelName === 'team') && where.deletedAt === undefined) {
+      if ((['user', 'team', 'contact', 'requirement'].includes(modelName)) && where.deletedAt === undefined) {
         where.deletedAt = null;
       }
       return rawModel.findFirstOrThrow({ ...args, where });
@@ -190,7 +220,7 @@ function wrapModel(modelName, rawModel, organizationId) {
       if (!where) throw new TenantContextError('findUnique requires where');
       assertWhereTenantMatches(where, organizationId);
       const tenantWhere = injectWhere(where, organizationId);
-      if ((modelName === 'user' || modelName === 'team') && tenantWhere.deletedAt === undefined) {
+      if ((['user', 'team', 'contact', 'requirement'].includes(modelName)) && tenantWhere.deletedAt === undefined) {
         tenantWhere.deletedAt = null;
       }
       // Use findFirst with tenant filter — valid for any where shape.
@@ -203,7 +233,7 @@ function wrapModel(modelName, rawModel, organizationId) {
       if (!where) throw new TenantContextError('findUniqueOrThrow requires where');
       assertWhereTenantMatches(where, organizationId);
       const tenantWhere = injectWhere(where, organizationId);
-      if ((modelName === 'user' || modelName === 'team') && tenantWhere.deletedAt === undefined) {
+      if ((['user', 'team', 'contact', 'requirement'].includes(modelName)) && tenantWhere.deletedAt === undefined) {
         tenantWhere.deletedAt = null;
       }
       return rawModel.findFirstOrThrow({ ...args, where: tenantWhere });
@@ -212,7 +242,7 @@ function wrapModel(modelName, rawModel, organizationId) {
     count: async (args = {}) => {
       assertTenantContext(organizationId);
       const where = injectWhere(args.where, organizationId);
-      if ((modelName === 'user' || modelName === 'team') && where.deletedAt === undefined) {
+      if ((['user', 'team', 'contact', 'requirement'].includes(modelName)) && where.deletedAt === undefined) {
         where.deletedAt = null;
       }
       return rawModel.count({ ...args, where });
@@ -249,6 +279,12 @@ function wrapModel(modelName, rawModel, organizationId) {
       }
       if (modelName === 'rolePermission') {
         await assertRolePermissionTenantIntegrity(organizationId, data, prisma);
+      }
+      if (modelName === 'requirement') {
+        await assertRequirementContactIntegrity(organizationId, data, prisma);
+      }
+      if (modelName === 'possibleDuplicate') {
+        await assertPossibleDuplicateIntegrity(organizationId, data, prisma);
       }
 
       return rawModel.create({ ...args, data });
@@ -294,12 +330,20 @@ function wrapModel(modelName, rawModel, organizationId) {
         throw err;
       }
 
-      // Cross-tenant guard if roleId is being changed on User
+      // Cross-tenant guards for updates that change relationships
       if (modelName === 'user' && args.data && args.data.roleId !== undefined) {
         const newRoleId = args.data.roleId;
         if (newRoleId !== null) {
           await assertUserRoleTenantIntegrity(organizationId, { roleId: newRoleId }, prisma);
         }
+      }
+      if (modelName === 'requirement' && args.data && args.data.contactId !== undefined) {
+        await assertRequirementContactIntegrity(organizationId, { contactId: args.data.contactId }, prisma);
+      }
+      if (modelName === 'possibleDuplicate' && args.data && (args.data.contactAId !== undefined || args.data.contactBId !== undefined)) {
+        const contactAId = args.data.contactAId !== undefined ? args.data.contactAId : existing.contactAId;
+        const contactBId = args.data.contactBId !== undefined ? args.data.contactBId : existing.contactBId;
+        await assertPossibleDuplicateIntegrity(organizationId, { contactAId, contactBId }, prisma);
       }
 
       // Perform update using the record's PK (id) which is globally unique and valid.
@@ -352,6 +396,14 @@ function wrapModel(modelName, rawModel, organizationId) {
         if (modelName === 'user' && args.update.roleId !== undefined && args.update.roleId !== null) {
           await assertUserRoleTenantIntegrity(organizationId, { roleId: args.update.roleId }, prisma);
         }
+        if (modelName === 'requirement' && args.update.contactId !== undefined) {
+          await assertRequirementContactIntegrity(organizationId, { contactId: args.update.contactId }, prisma);
+        }
+        if (modelName === 'possibleDuplicate' && (args.update.contactAId !== undefined || args.update.contactBId !== undefined)) {
+          const contactAId = args.update.contactAId !== undefined ? args.update.contactAId : existing.contactAId;
+          const contactBId = args.update.contactBId !== undefined ? args.update.contactBId : existing.contactBId;
+          await assertPossibleDuplicateIntegrity(organizationId, { contactAId, contactBId }, prisma);
+        }
         const whereForUpdate = { id: existing.id };
         return rawModel.update({ where: whereForUpdate, data: args.update });
       }
@@ -364,6 +416,12 @@ function wrapModel(modelName, rawModel, organizationId) {
       }
       if (modelName === 'rolePermission') {
         await assertRolePermissionTenantIntegrity(organizationId, create, prisma);
+      }
+      if (modelName === 'requirement') {
+        await assertRequirementContactIntegrity(organizationId, create, prisma);
+      }
+      if (modelName === 'possibleDuplicate') {
+        await assertPossibleDuplicateIntegrity(organizationId, create, prisma);
       }
       return rawModel.create({ data: create });
     },
@@ -411,6 +469,9 @@ function createTenantPrisma(organizationId) {
     user: wrapModel('user', prisma.user, organizationId),
     teamMembership: wrapModel('teamMembership', prisma.teamMembership, organizationId),
     rolePermission: wrapModel('rolePermission', prisma.rolePermission, organizationId),
+    contact: wrapModel('contact', prisma.contact, organizationId),
+    requirement: wrapModel('requirement', prisma.requirement, organizationId),
+    possibleDuplicate: wrapModel('possibleDuplicate', prisma.possibleDuplicate, organizationId),
 
     // Preserve raw access for advanced needs, but clearly marked as unscoped
     _raw: prisma,
@@ -438,6 +499,9 @@ function createTenantPrisma(organizationId) {
             user: wrapModel('user', rawTx.user, organizationId),
             teamMembership: wrapModel('teamMembership', rawTx.teamMembership, organizationId),
             rolePermission: wrapModel('rolePermission', rawTx.rolePermission, organizationId),
+            contact: wrapModel('contact', rawTx.contact, organizationId),
+            requirement: wrapModel('requirement', rawTx.requirement, organizationId),
+            possibleDuplicate: wrapModel('possibleDuplicate', rawTx.possibleDuplicate, organizationId),
             _raw: rawTx,
             _organizationId: organizationId,
           };

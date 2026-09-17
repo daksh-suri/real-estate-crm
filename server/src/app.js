@@ -11,6 +11,8 @@ const demoAuthzRoutes = require('./modules/authorization/demoRoutes');
 const organizationRoutes = require('./modules/organizations/routes');
 const teamRoutes = require('./modules/teams/routes');
 const userTeamsRoutes = require('./modules/teams/userTeamsRoutes');
+const contactRoutes = require('./modules/contacts/routes');
+const requirementRoutes = require('./modules/requirements/routes');
 const notFoundHandler = require('./middleware/notFoundHandler');
 const errorHandler = require('./middleware/errorHandler');
 
@@ -41,6 +43,8 @@ app.use('/auth', authRoutes);
 app.use('/organizations', organizationRoutes);
 app.use('/teams', teamRoutes);
 app.use('/users', userTeamsRoutes);
+app.use('/contacts', contactRoutes);
+app.use('/requirements', requirementRoutes);
 app.use('/protected', demoAuthzRoutes);
 
 // 404 handler

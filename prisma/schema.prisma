@@ -1,12 +1,13 @@
 // Prisma schema for Real Estate CRM
 // Primary Source of Truth: docs/CRM_Implementation_Blueprint_Phase3.md
-// Checkpoint 2 — Database Foundation & Tenant Scoping
+// Checkpoint 5 — Contact + Requirement
 //
 // TENANT CLASSIFICATION
 // ---------------------
 // GLOBAL (no organizationId): Permission, Organization (is the tenant itself)
 // TENANT-SCOPED (organizationId NOT NULL, indexed, FK to Organization):
-//   Role, Team, User, RolePermission, TeamMembership, RefreshToken
+//   Role, Team, User, RolePermission, TeamMembership, RefreshToken,
+//   Contact, Requirement, PossibleDuplicate
 //
 // Tenant scoping is enforced centrally via server/src/lib/prisma.js and
 // server/src/lib/tenant.js — see those files for the fail-closed extension.
@@ -38,6 +39,17 @@ enum DataScope {
   ORGANIZATION
 }
 
+enum CommunicationConsent {
+  OPTED_IN
+  OPTED_OUT
+}
+
+enum PossibleDuplicateStatus {
+  PENDING
+  CONFIRMED_SAME
+  CONFIRMED_DIFFERENT
+}
+
 // ---------------------------------------------------------------------------
 // GLOBAL — Organization is the tenant root (not tenant-scoped itself)
 // ---------------------------------------------------------------------------
@@ -53,12 +65,15 @@ model Organization {
   // soft-delete (User.deletedAt) and audit logs in later checkpoints, not by
   // retaining orphaned tenant rows. Tier 1 financial/legal immutability
   // (future checkpoints) will use Restrict/SetNull, never Cascade.
-  users           User[]
-  teams           Team[]
-  roles           Role[]
-  rolePermissions RolePermission[]
-  teamMemberships TeamMembership[]
-  refreshTokens   RefreshToken[]
+  users               User[]
+  teams               Team[]
+  roles               Role[]
+  rolePermissions     RolePermission[]
+  teamMemberships     TeamMembership[]
+  refreshTokens       RefreshToken[]
+  contacts            Contact[]
+  requirements        Requirement[]
+  possibleDuplicates  PossibleDuplicate[]
 
   @@map("organizations")
 }
@@ -140,6 +155,86 @@ model Team {
   @@index([organizationId])
   @@index([deletedAt])
   @@map("teams")
+}
+
+// ---------------------------------------------------------------------------
+// TENANT-SCOPED — Contact & Requirement (Checkpoint 5)
+// ---------------------------------------------------------------------------
+
+model Contact {
+  id                   String                @id @default(uuid())
+  organizationId       String
+  name                 String
+  phone                String?
+  normalizedPhone      String?
+  email                String?
+  normalizedEmail      String?
+  communicationConsent CommunicationConsent  @default(OPTED_IN)
+  consentUpdatedAt     DateTime?
+  consentSource        String?
+  deletedAt            DateTime?
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  requirements Requirement[]
+  possibleDuplicatesA PossibleDuplicate[] @relation("ContactA")
+  possibleDuplicatesB PossibleDuplicate[] @relation("ContactB")
+
+  // Deterministic duplicate protection: same org + same normalized email + same normalized phone (both non-null) is considered same identity
+  @@unique([organizationId, normalizedEmail, normalizedPhone])
+  @@index([organizationId])
+  @@index([organizationId, normalizedEmail])
+  @@index([organizationId, normalizedPhone])
+  @@index([deletedAt])
+  @@map("contacts")
+}
+
+model Requirement {
+  id                    String    @id @default(uuid())
+  organizationId        String
+  contactId             String
+  unitTypePreference    String?
+  budgetMin             Decimal?  @db.Decimal(15, 2)
+  budgetMax             Decimal?  @db.Decimal(15, 2)
+  preferredProjectIds   String[]  @default([])
+  possessionPreference  String?
+  notes                 String?   @db.Text
+  isActive              Boolean   @default(true)
+  deletedAt             DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  contact      Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([organizationId])
+  @@index([contactId])
+  @@index([organizationId, contactId])
+  @@index([deletedAt])
+  @@map("requirements")
+}
+
+model PossibleDuplicate {
+  id             String                   @id @default(uuid())
+  organizationId String
+  contactAId     String
+  contactBId     String
+  matchSignal    String
+  status         PossibleDuplicateStatus  @default(PENDING)
+  createdAt      DateTime                 @default(now())
+  updatedAt      DateTime                 @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  contactA     Contact      @relation("ContactA", fields: [contactAId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  contactB     Contact      @relation("ContactB", fields: [contactBId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([organizationId, contactAId, contactBId])
+  @@index([organizationId])
+  @@index([contactAId])
+  @@index([contactBId])
+  @@index([status])
+  @@map("possible_duplicates")
 }
 
 model User {

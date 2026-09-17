@@ -21,6 +21,9 @@ const TENANT_MODELS = new Set([
   'teamMembership',
   'rolePermission',
   'refreshToken',
+  'contact',
+  'requirement',
+  'possibleDuplicate',
 ]);
 
 const GLOBAL_MODELS = new Set([
@@ -30,7 +33,7 @@ const GLOBAL_MODELS = new Set([
 
 // Prisma client property names are lowercase camelCase matching model names.
 // Maps for validation / documentation.
-const TENANT_MODEL_NAMES = ['Role', 'Team', 'User', 'TeamMembership', 'RolePermission', 'RefreshToken'];
+const TENANT_MODEL_NAMES = ['Role', 'Team', 'User', 'TeamMembership', 'RolePermission', 'RefreshToken', 'Contact', 'Requirement', 'PossibleDuplicate'];
 const GLOBAL_MODEL_NAMES = ['Organization', 'Permission'];
 
 module.exports = {
