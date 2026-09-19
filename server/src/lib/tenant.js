@@ -364,6 +364,38 @@ function withBookingExisting(existing, patch) {
   };
 }
 
+async function assertPaymentPlanIntegrity(organizationId, data, rawPrisma) {
+  if (data.dealId) {
+    const deal = await assertSameOrgReference(rawPrisma, 'deal', data.dealId, organizationId, 'PaymentPlan dealId');
+    if (deal.deletedAt) {
+      throw new CrossTenantError(`PaymentPlan cannot be attached to soft-deleted deal ${data.dealId}`);
+    }
+  }
+}
+
+async function assertPaymentObligationIntegrity(organizationId, data, rawPrisma) {
+  if (data.paymentPlanId) {
+    await assertSameOrgReference(rawPrisma, 'paymentPlan', data.paymentPlanId, organizationId, 'PaymentObligation paymentPlanId');
+  }
+}
+
+async function assertPaymentRecordIntegrity(organizationId, data, rawPrisma) {
+  if (data.obligationId) {
+    await assertSameOrgReference(rawPrisma, 'paymentObligation', data.obligationId, organizationId, 'PaymentRecord obligationId');
+  }
+  if (data.correctsRecordId) {
+    await assertSameOrgReference(rawPrisma, 'paymentRecord', data.correctsRecordId, organizationId, 'PaymentRecord correctsRecordId');
+  }
+}
+
+function withPaymentObligationExisting(existing, patch) {
+  return { paymentPlanId: existing.paymentPlanId, ...patch };
+}
+
+function withPaymentRecordExisting(existing, patch) {
+  return { obligationId: existing.obligationId, correctsRecordId: existing.correctsRecordId, ...patch };
+}
+
 async function assertDealIntegrity(organizationId, data, rawPrisma) {
   if (data.contactId) {
     const contact = await assertSameOrgReference(rawPrisma, 'contact', data.contactId, organizationId, 'Deal contactId');
@@ -547,6 +579,15 @@ function wrapModel(modelName, rawModel, organizationId, guardClient) {
       if (modelName === 'booking') {
         await assertBookingIntegrity(organizationId, data, guards);
       }
+      if (modelName === 'paymentPlan') {
+        await assertPaymentPlanIntegrity(organizationId, data, guards);
+      }
+      if (modelName === 'paymentObligation') {
+        await assertPaymentObligationIntegrity(organizationId, data, guards);
+      }
+      if (modelName === 'paymentRecord') {
+        await assertPaymentRecordIntegrity(organizationId, data, guards);
+      }
 
       return rawModel.create({ ...args, data });
     },
@@ -637,6 +678,12 @@ function wrapModel(modelName, rawModel, organizationId, guardClient) {
       if (modelName === 'booking' && args.data) {
         await assertBookingIntegrity(organizationId, withBookingExisting(existing, args.data), guards);
       }
+      if (modelName === 'paymentObligation' && args.data) {
+        await assertPaymentObligationIntegrity(organizationId, withPaymentObligationExisting(existing, args.data), guards);
+      }
+      if (modelName === 'paymentRecord' && args.data) {
+        await assertPaymentRecordIntegrity(organizationId, withPaymentRecordExisting(existing, args.data), guards);
+      }
 
       // Perform update using the record's PK (id) which is globally unique and valid.
       // This avoids generating an invalid where: { id, organizationId } for Prisma update.
@@ -721,6 +768,12 @@ function wrapModel(modelName, rawModel, organizationId, guardClient) {
         if (modelName === 'booking' && args.update) {
           await assertBookingIntegrity(organizationId, withBookingExisting(existing, args.update), guards);
         }
+        if (modelName === 'paymentObligation' && args.update) {
+          await assertPaymentObligationIntegrity(organizationId, withPaymentObligationExisting(existing, args.update), guards);
+        }
+        if (modelName === 'paymentRecord' && args.update) {
+          await assertPaymentRecordIntegrity(organizationId, withPaymentRecordExisting(existing, args.update), guards);
+        }
         const whereForUpdate = { id: existing.id };
         return rawModel.update({ where: whereForUpdate, data: args.update });
       }
@@ -766,6 +819,15 @@ function wrapModel(modelName, rawModel, organizationId, guardClient) {
       }
       if (modelName === 'booking') {
         await assertBookingIntegrity(organizationId, create, guards);
+      }
+      if (modelName === 'paymentPlan') {
+        await assertPaymentPlanIntegrity(organizationId, create, guards);
+      }
+      if (modelName === 'paymentObligation') {
+        await assertPaymentObligationIntegrity(organizationId, create, guards);
+      }
+      if (modelName === 'paymentRecord') {
+        await assertPaymentRecordIntegrity(organizationId, create, guards);
       }
       return rawModel.create({ data: create });
     },
@@ -830,6 +892,9 @@ function createTenantPrisma(organizationId) {
     siteVisit: wrapModel('siteVisit', prisma.siteVisit, organizationId),
     reservation: wrapModel('reservation', prisma.reservation, organizationId),
     booking: wrapModel('booking', prisma.booking, organizationId),
+    paymentPlan: wrapModel('paymentPlan', prisma.paymentPlan, organizationId),
+    paymentObligation: wrapModel('paymentObligation', prisma.paymentObligation, organizationId),
+    paymentRecord: wrapModel('paymentRecord', prisma.paymentRecord, organizationId),
 
     // Preserve raw access for advanced needs, but clearly marked as unscoped
     _raw: prisma,
@@ -878,6 +943,9 @@ function createTenantPrisma(organizationId) {
             siteVisit: txWrap('siteVisit', rawTx.siteVisit),
             reservation: txWrap('reservation', rawTx.reservation),
             booking: txWrap('booking', rawTx.booking),
+            paymentPlan: txWrap('paymentPlan', rawTx.paymentPlan),
+            paymentObligation: txWrap('paymentObligation', rawTx.paymentObligation),
+            paymentRecord: txWrap('paymentRecord', rawTx.paymentRecord),
             _raw: rawTx,
             _organizationId: organizationId,
           };

@@ -8,7 +8,7 @@ const OPERATION_HOLD_CREATE = 'HOLD_CREATE';
 // the Unit row is locked FOR UPDATE. Expected Unit state per ACTIVE type:
 const UNIT_STATUS_FOR_TYPE = { RESERVATION: 'RESERVED', HOLD: 'ON_HOLD' };
 
-const { notFoundError, forbiddenError, badRequestError, conflictError } = require('../../lib/httpError');
+const { notFoundError, badRequestError, conflictError } = require('../../lib/httpError');
 
 // ---------------------------------------------------------------------------
 // Reference resolvers (tx-bound). The Unit's availability is NEVER gated

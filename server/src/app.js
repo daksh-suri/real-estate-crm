@@ -23,6 +23,7 @@ const dealRoutes = require('./modules/deals/routes');
 const siteVisitRoutes = require('./modules/siteVisits/routes');
 const reservationRoutes = require('./modules/reservations/routes');
 const bookingRoutes = require('./modules/bookings/routes');
+const { planRouter, obligationRouter, recordRouter, webhookRouter } = require('./modules/payments/routes');
 const notFoundHandler = require('./middleware/notFoundHandler');
 const errorHandler = require('./middleware/errorHandler');
 
@@ -66,6 +67,10 @@ app.use('/deals', dealRoutes);
 app.use('/site-visits', siteVisitRoutes);
 app.use('/reservations', reservationRoutes);
 app.use('/bookings', bookingRoutes);
+app.use('/payment-plans', planRouter);
+app.use('/payment-obligations', obligationRouter);
+app.use('/payment-records', recordRouter);
+app.use('/webhooks', webhookRouter);
 app.use('/protected', demoAuthzRoutes);
 
 // 404 handler

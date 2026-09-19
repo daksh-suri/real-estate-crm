@@ -2,6 +2,8 @@
 // Primary Source of Truth: docs/CRM_Implementation_Blueprint_Phase3.md
 // Checkpoint 11 — Booking (Booking; Reservation ACTIVE → CONVERTED,
 // Unit RESERVED → BOOKED, one booking per reservation)
+// Checkpoint 12 — Payments (PaymentPlan/Obligation/Record; deal-specific
+// installment schedules, correction-only records, idempotent webhook)
 //
 // TENANT CLASSIFICATION
 // ---------------------
@@ -10,7 +12,8 @@
 //   Role, Team, User, RolePermission, TeamMembership, RefreshToken,
 //   Contact, Requirement, PossibleDuplicate, Project, Unit,
 //   LeadSource, Campaign, Enquiry, Lead, AssignmentRule, RoundRobinState,
-//   IdempotencyKey, Deal, AuditLog, SiteVisit, Reservation, Booking
+//   IdempotencyKey, Deal, AuditLog, SiteVisit, Reservation, Booking,
+//   PaymentPlan, PaymentObligation, PaymentRecord
 //
 // Tenant scoping is enforced centrally via server/src/lib/prisma.js and
 // server/src/lib/tenant.js — see those files for the fail-closed extension.
@@ -174,6 +177,9 @@ model Organization {
   siteVisits          SiteVisit[]
   reservations        Reservation[]
   bookings            Booking[]
+  paymentPlans        PaymentPlan[]
+  paymentObligations PaymentObligation[]
+  paymentRecords      PaymentRecord[]
 
   @@map("organizations")
 }
@@ -695,6 +701,7 @@ model Deal {
   siteVisits   SiteVisit[]
   reservations Reservation[]
   bookings     Booking[]
+  paymentPlans PaymentPlan[]
 
   @@index([organizationId])
   @@index([organizationId, stage])
@@ -847,4 +854,87 @@ model Booking {
   @@index([unitId])
   @@index([dealId])
   @@map("bookings")
+}
+
+// ---------------------------------------------------------------------------
+// TENANT-SCOPED — Payments (Checkpoint 12)
+// Deal-specific installment schedules. PaymentPlan hangs off one Deal (one
+// plan per deal, @unique backstop); reusable/approved plan templates are
+// deferred (see DEC-029) — the per-deal obligations array IS the custom
+// schedule. OVERDUE is derived at read (PENDING + past dueDate), never
+// written: no scheduler exists and the webhook stays the sole PAID writer.
+// PaymentRecord is correction-only: new row with correctsRecordId, never
+// in-place edits. No Deal/Booking/Unit writes from this module.
+// ---------------------------------------------------------------------------
+
+enum ObligationStatus {
+  PENDING
+  PAID
+  OVERDUE
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+model PaymentPlan {
+  id             String   @id @default(uuid())
+  organizationId String
+  dealId         String   @unique
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  // Restrict: a plan is Tier-1 financial history; the Deal must never
+  // disappear under it.
+  deal         Deal       @relation(fields: [dealId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  obligations  PaymentObligation[]
+
+  @@index([organizationId])
+  @@map("payment_plans")
+}
+
+model PaymentObligation {
+  id             String           @id @default(uuid())
+  organizationId String
+  paymentPlanId  String
+  dueAmount      Decimal          @db.Decimal(15, 2)
+  dueDate        DateTime
+  status         ObligationStatus @default(PENDING)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  paymentPlan PaymentPlan      @relation(fields: [paymentPlanId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  records     PaymentRecord[]
+
+  @@index([organizationId])
+  @@index([paymentPlanId])
+  @@index([status])
+  @@map("payment_obligations")
+}
+
+model PaymentRecord {
+  id               String        @id @default(uuid())
+  organizationId   String
+  obligationId     String
+  amount           Decimal       @db.Decimal(15, 2)
+  status           PaymentStatus
+  gatewayReference String?
+  correctsRecordId String?       @unique
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  // Restrict throughout: payment history is never detached or removed.
+  obligation   PaymentObligation @relation(fields: [obligationId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  corrects     PaymentRecord?    @relation("RecordCorrection", fields: [correctsRecordId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  correctedBy  PaymentRecord?    @relation("RecordCorrection")
+
+  @@index([organizationId])
+  @@index([obligationId])
+  @@index([gatewayReference])
+  @@map("payment_records")
 }

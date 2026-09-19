@@ -302,8 +302,8 @@ async function mergeContacts({ tenantPrisma, organizationId, survivorId, duplica
   }
 
   // Transaction: lock the source Contact row BEFORE the final mergeable check,
-  // then re-read inside the lock, migrate requirements, soft-delete source,
-  // update PossibleDuplicate statuses. The competing transaction blocks on the
+  // then re-read inside the lock, migrate all Contact-owned relations,
+  // soft-delete source, update PossibleDuplicate statuses. The competing transaction blocks on the
   // lock; after acquiring it, it observes the completed merge and returns 409.
   const result = await tenantPrisma.$transaction(
     async (tx) => {
@@ -349,6 +349,59 @@ async function mergeContacts({ tenantPrisma, organizationId, survivorId, duplica
 
       // Move requirements
       await tx.requirement.updateMany({
+        where: { contactId: duplicateId, organizationId },
+        data: { contactId: survivorId },
+      });
+
+      // Reassign every other Contact-owned relation to the survivor BEFORE
+      // soft-delete, or active records would point at a contact that tenant
+      // reads no longer expose. All writes are org-scoped; any failure rolls
+      // back the whole merge. Link fields (linkedLeadId, origin, deal lead,
+      // visit deal) are untouched — history is preserved, not rewritten.
+
+      // Enquiries (contactId optional; unmatched null-contact rows unaffected).
+      await tx.enquiry.updateMany({
+        where: { contactId: duplicateId, organizationId },
+        data: { contactId: survivorId },
+      });
+
+      // Leads: conflicting OPEN leads (survivor holds an OPEN lead on the
+      // same non-null project) move as DISQUALIFIED — a reconciliation
+      // parking state, not a sales verdict (see DEC-028). Everything else
+      // keeps its status; project-less OPEN leads never conflict by design.
+      const dupLeads = await tx.lead.findMany({
+        where: { contactId: duplicateId, organizationId },
+        select: { id: true, projectId: true, status: true, deletedAt: true },
+      });
+      const conflictingIds = [];
+      for (const lead of dupLeads) {
+        if (lead.status !== 'OPEN' || lead.deletedAt || !lead.projectId) continue;
+        const clash = await tx.lead.findFirst({
+          where: { contactId: survivorId, organizationId, projectId: lead.projectId, status: 'OPEN' },
+          select: { id: true },
+        });
+        if (clash) conflictingIds.push(lead.id);
+      }
+      if (conflictingIds.length > 0) {
+        await tx.lead.updateMany({
+          where: { organizationId, id: { in: conflictingIds } },
+          data: { contactId: survivorId, status: 'DISQUALIFIED' },
+        });
+      }
+      await tx.lead.updateMany({
+        where: { contactId: duplicateId, organizationId, NOT: { id: { in: conflictingIds } } },
+        data: { contactId: survivorId },
+      });
+
+      // Deals: their leads moved above to the same contact, so the
+      // lead.contactId === deal.contactId invariant holds post-move.
+      await tx.deal.updateMany({
+        where: { contactId: duplicateId, organizationId },
+        data: { contactId: survivorId },
+      });
+
+      // Site visits: paired deals move in the same transaction.
+      await tx.siteVisit.updateMany({
         where: { contactId: duplicateId, organizationId },
         data: { contactId: survivorId },
       });

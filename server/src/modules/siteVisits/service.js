@@ -25,7 +25,7 @@ const ALLOWED_TRANSITIONS = {
   NO_SHOW: [],
 };
 
-const { notFoundError, forbiddenError, badRequestError, conflictError } = require('../../lib/httpError');
+const { notFoundError, badRequestError, conflictError } = require('../../lib/httpError');
 
 // ---------------------------------------------------------------------------
 // Reference resolvers (tx-bound). Availability/status of referenced rows is

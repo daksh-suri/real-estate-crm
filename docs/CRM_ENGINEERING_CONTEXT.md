@@ -69,7 +69,7 @@ Organization / Tenant (tenant root, global table)
     +-- Properties
     |      +-- Projects ── Units (availability owned by Reservation/Hold/Booking flows, never direct edits)
     |
-    +-- Sales [IMPLEMENTED: Deal, SiteVisit, Reservation/Hold, Booking; SPECIFIED: PaymentPlan/Obligation/Record]
+    +-- Sales [IMPLEMENTED: Deal, SiteVisit, Reservation/Hold, Booking, PaymentPlan/Obligation/Record; SPECIFIED: Documents]
     +-- Activity / Task [SPECIFIED, not implemented]
     +-- Document [SPECIFIED, not implemented]
     +-- Communication automation, dashboards, reports [DEFERRED / future]
@@ -158,6 +158,9 @@ Established rejections (Phase 2 Part G + scope corrections) — do not build: ge
 | SiteVisit | One **planned customer property visit** — agent + project + slot | A calendar system, a Unit hold, a Deal stage driver | `SCHEDULED` start, 60-min default, 15-min agent-only buffer; optional dealId (contact-consistent); no `deletedAt`; transitions via dedicated ops; reschedule re-locks + re-checks |
 | Reservation | One **unit claim or hold** — deal + unit + type | Booking/payment detail (references it, never the reverse) | `type` RESERVATION/HOLD on one row (no UnitHold table); `dealId` required in V1; `status` ACTIVE→EXPIRED/RELEASED/CONVERTED (CONVERTED only via Booking); `expiresAt` nullable (no-expiry hold); no `deletedAt`; Unit + row mutate in one tx under Unit `FOR UPDATE`; dedicated create/release/expiry ops |
 | Booking | Finalized **unit sale record** — deal + unit + reservation | Payment detail (references it, never the reverse) | `reservationId` required + unique (one booking per reservation); `bookedAt` server-set; lifecycle is the cancel triple (no status enum, no `deletedAt`); create converts ACTIVE RESERVATION→CONVERTED + Unit RESERVED→BOOKED in one tx; cancel preserves row, frees Unit→AVAILABLE, keeps CONVERTED; no `Deal.stage` move (agent drives transition explicitly) |
+| PaymentPlan | Deal-specific **installment schedule container** — one plan per deal | Reusable plan templates (deferred, see DEC-029) | `dealId` required + unique; obligations supplied per deal at creation; no template lookup, no approval state |
+| PaymentObligation | One **expected payment** — plan + amount + due date | Actual payment attempts (that's PaymentRecord) | `status` PENDING/PAID stored; OVERDUE derived at read (PENDING + past dueDate), never written; PAID only via SUCCESS webhook in-tx; no `deletedAt` |
+| PaymentRecord | One **payment attempt/result** — obligation + amount + outcome | Obligation state (derived from records, never edited to match) | `status` PENDING/SUCCESS/FAILED; correction-only via new row + `correctsRecordId` (original preserved); `gatewayReference` + eventId recorded; no `deletedAt`, no PATCH/DELETE |
 | AuditLog | Shared **append-only history row** (first writer: Deal) | A per-entity history table — `Deal.stageHistory` derives from these rows | `actorId` has no FK (history survives actor deletion); `deal.create` + `deal.stage_transition` entries written in the same transaction as the state change |
 | LeadSource / Campaign | Intake attribution config (portal names, campaigns) | Analytics engine | Per-org unique names; campaign→source must be same-org |
 | AssignmentRule | `type + order + config + active` | A script/expression (config holds params only, never logic) | V1: `ROUND_ROBIN` only; config `{ teamId }` must be a visible same-org team |
@@ -169,7 +172,7 @@ Protected distinctions — do not collapse: **Activity = what happened. Task = w
 
 ### Specified but NOT implemented
 
-PaymentPlan/Obligation/Record, Document, Activity, Task, OutboxEvent, IntegrationConfig. Phase 3 Part B/C defines their shape; no tables, routes, or logic exist yet. (Deal + AuditLog moved to IMPLEMENTED in Checkpoint 8; SiteVisit in Checkpoint 9; Reservation/Hold in Checkpoint 10; Booking in Checkpoint 11.)
+Document, Activity, Task, OutboxEvent, IntegrationConfig. Phase 3 Part B/C defines their shape; no tables, routes, or logic exist yet. (Deal + AuditLog moved to IMPLEMENTED in Checkpoint 8; SiteVisit in Checkpoint 9; Reservation/Hold in Checkpoint 10; Booking in Checkpoint 11; PaymentPlan/Obligation/Record in Checkpoint 12.)
 
 ## 8. Critical Architecture & Business Decisions
 
@@ -352,6 +355,22 @@ PaymentPlan/Obligation/Record, Document, Activity, Task, OutboxEvent, Integratio
 **Why:** The unique conversion edge plus the Unit lock makes double-booking structurally impossible instead of convention-blocked; the missing stage move keeps one Deal mutation path.
 **Important Edge Cases:** Concurrent bookings on one reservation → one 201, loser 409 (or 200 replay same-key). Cancel-after-reuse frees only a still-BOOKED unit and never touches CONVERTED. Same-key different-reservation → 409.
 
+### DEC-028 — Contact merge reassigns all owned relations; OPEN conflict parks as DISQUALIFIED
+**Status:** IMPLEMENTED
+**Problem / Context:** Merge moved only Requirements, leaving Enquiry/Lead/Deal/SiteVisit rows pointing at a soft-deleted contact that tenant reads no longer expose (Phase 3: merge = transactional FK reassignment, all-or-nothing).
+**Decision:** Inside the existing merge tx (duplicate row locked `FOR UPDATE`), reassign org-scoped `updateMany` for Requirement, Enquiry (links untouched), Lead (two-pass, below), Deal, SiteVisit — then soft-delete with `consentSource=merged_into:<id>` and mark the pair `CONFIRMED_SAME`. Link fields (`linkedLeadId`, origin, deal lead, visit deal) are never rewritten; history is preserved, not relinked. Moves keep `lead.contactId === deal.contactId` consistent since both move to the same contact.
+**Rules:** OPEN-lead conflict (both contacts OPEN + alive on the same non-null project) moves the duplicate's lead as `DISQUALIFIED` — a reconciliation parking state, NOT a sales verdict: no lead-level marker exists (no migration for a flag); provenance is the merged contact + pair status. Reopen follows the normal `PATCH` slot rule only (409 while occupied, 200 once freed). Project-less OPEN leads never conflict by design (index excludes NULL). Anything outside these enumerated cases → 409, never guessed.
+**Why:** The partial index (`leads_open_contact_project_key`) is kept as the guarantee; the two-pass move resolves the only collision shape without deleting history or forking duplicate OPEN leads.
+**Important Edge Cases:** Concurrent merges serialize on the duplicate lock; the loser observes terminal state (409) with zero partial writes. Cross-tenant merges reject before the tx with nothing reassigned. Non-pair `PossibleDuplicate` rows are untouched (existing V1 simplicity). Same-key different-reservation → 409.
+
+### DEC-029 — Payments are deal-specific schedules; provider-neutral webhook, no outbox yet
+**Status:** IMPLEMENTED
+**Problem / Context:** Booking needs a payment schedule + gateway-result ingestion without a plan-template system, a real provider, or background workers (Phase 3 Phase 10; RERA guards removed from V1).
+**Decision:** `PaymentPlan(dealId! @unique)` + `PaymentObligation(plan, dueAmount, dueDate, PENDING/PAID stored)` + `PaymentRecord(obligation, amount, PENDING/SUCCESS/FAILED, gatewayReference?, correctsRecordId? @unique self-FK)`. Plan creation is an explicit idempotent `POST /payment-plans {bookingId, obligations[]}` (`PAYMENT_PLAN_CREATE`); the obligations array IS the custom schedule. No plan templates exist in any source (verified: "template" hits are doc/notification lanes; "installment" is a trigger label) — reusable/approved monthly templates are DEFERRED/OPEN, additive later, no V1 reshaping needed. Webhook `POST /webhooks/payment-gateway` is provider-neutral and unauthenticated by necessity (no gateway/secret in repo — signing deferred, documented risk); tenant derives from the obligation row, gateway `eventId` is the `PAYMENT_WEBHOOK` key. Tx: lock obligation `FOR UPDATE` → re-read → create record → SUCCESS flips PAID (already-PAID + SUCCESS → 409). No outbox (doesn't exist; jobs checkpoint owns it), no audit rows (Phase 3 payment rows mandate none), no `Deal.stage`/Booking/Unit writes, no PATCH/DELETE on payment rows.
+**Rules:** Permissions: `paymentPlan:create|read`, `paymentObligation:read`, `paymentRecord:read` (webhook exempt — external boundary). OVERDUE derived at read (PENDING + past due), never written. Corrections: new row + `correctsRecordId` (same-obligation enforced, double-correction blocked by unique); originals never mutated.
+**Why:** The unique(dealId) + unique(correctsRecordId) + eventId-keyed idempotency make duplicate plans/records structurally impossible; derived OVERDUE keeps the webhook the sole PAID writer with no scheduler to build.
+**Important Edge Cases:** Concurrent duplicate deliveries → one 201 + one 200 replay, single SUCCESS. Same event different payload → 409. FAILED/PENDING records stay visible with obligation unpaid. Malformed/unknown/cross-tenant obligation → 400/404 with zero mutation.
+
 ## 9. Assignment Architecture
 
 ```
@@ -433,14 +452,14 @@ Each pattern exists because application-only checks (`if (!x) create x`) fail un
 - **Error semantics:** 401 unauthenticated/expired/deactivated; 403 guard violation or confirmed cross-tenant write; 404 unknown id OR cross-tenant/deleted read (hide existence); 400 validation, bad transition, soft-deleted write, direct-mutation attempts; 409 uniqueness/idempotency-hash conflicts. Envelope: `{ error: { message, status } }` (+ stack off-prod).
 - **Validation:** zod at the boundary before any service logic; coerce query numerics; unknown-keys policy: immutable/system fields checked against the raw body for precise 400s (see unit/projectId, lead/assignedAgentId pattern).
 - **Pagination/filtering:** `limit` (default 20, cap 100) + `offset` + whitelisted exact-match filters and `contains+insensitive` search. Cursor pagination is Phase 2 guidance for large lists — NOT yet adopted; prefer it for new high-volume list endpoints.
-- **Direct mutation restrictions (do not bypass):** no `POST /leads`; no `availabilityStatus` or `Unit.projectId` writes; no assignment via `PATCH /leads`; no auto-merge of duplicates; no generic `PATCH /site-visits` (status/slot move only via dedicated ops); no generic `PATCH /reservations` (status/type/unitId/dealId immutable — ACTIVE moves only via release/expiry/Booking); no `PATCH/PUT/DELETE /bookings` (finalized rows mutate only via dedicated cancel).
-- **Endpoint naming:** plural kebab resources (`/enquiries`, `/leads`, `/lead-sources`, `/campaigns`, `/assignment-rules`, `/projects`, `/units`, `/contacts`, `/requirements`, `/teams`, `/organizations`, `/deals`, `/site-visits`, `/reservations`, `/bookings`); actions as subpaths (`/:id/reassign`, `/:id/merge`, `/:projectId/units`, `/:id/stage-transition`, `/:id/confirm|cancel|complete|no-show|reschedule`, `/:id/release`, `/:id/cancel`).
+- **Direct mutation restrictions (do not bypass):** no `POST /leads`; no `availabilityStatus` or `Unit.projectId` writes; no assignment via `PATCH /leads`; no auto-merge of duplicates; no generic `PATCH /site-visits` (status/slot move only via dedicated ops); no generic `PATCH /reservations` (status/type/unitId/dealId immutable — ACTIVE moves only via release/expiry/Booking); no `PATCH/PUT/DELETE /bookings` (finalized rows mutate only via dedicated cancel); no `PATCH/PUT/DELETE` on any payment row (obligations flip PAID only via webhook; records correct only via new row + `correctsRecordId`).
+- **Endpoint naming:** plural kebab resources (`/enquiries`, `/leads`, `/lead-sources`, `/campaigns`, `/assignment-rules`, `/projects`, `/units`, `/contacts`, `/requirements`, `/teams`, `/organizations`, `/deals`, `/site-visits`, `/reservations`, `/bookings`, `/payment-plans`, `/payment-obligations`, `/payment-records`, `/webhooks/payment-gateway`); actions as subpaths (`/:id/reassign`, `/:id/merge`, `/:projectId/units`, `/:id/stage-transition`, `/:id/confirm|cancel|complete|no-show|reschedule`, `/:id/release`, `/:id/cancel`).
 
 ## 13. Testing Philosophy
 
 Strong tests are required for: tenant isolation, authorization matrix, transactions, concurrent requests, idempotency (replay + conflict + races), state transitions (valid and invalid), uniqueness (including reopen conflicts), soft-delete read/write behavior, cross-organization attacks, external failure boundaries (malformed payloads preserved, not dropped), assignment (order, concurrency, deactivation, manual-wins), contact matching tiers, repeat-enquiry attach-vs-create.
 
-Snapshot (not a requirement): **359 tests / 12 suites** — auth 61, tenantIsolation 50, contactsRequirements 47, enquiryLead 33, organizationsTeams 33, reservations 32, siteVisits 29, propertyHierarchy 28, bookings 21, dealsPipeline 20, refreshConcurrency 3, health 2. Concurrency-sensitive tests are re-run multiple times before sign-off. Never weaken an existing test to make a new feature pass.
+Snapshot (not a requirement): **385 tests / 13 suites** — auth 61, tenantIsolation 50, contactsRequirements 56, enquiryLead 33, organizationsTeams 33, reservations 32, siteVisits 29, propertyHierarchy 28, bookings 21, payments 17, dealsPipeline 20, refreshConcurrency 3, health 2. Concurrency-sensitive tests are re-run multiple times before sign-off. Never weaken an existing test to make a new feature pass.
 
 ## 14. Implementation Status
 
@@ -457,7 +476,8 @@ Snapshot (not a requirement): **359 tests / 12 suites** — auth 61, tenantIsola
 | 9 | Site visit | COMPLETE | Agent + Project resources, 60/15 defaults, lock + re-check, idempotent schedule, dedicated lifecycle/reschedule ops; 29 integration tests |
 | 10 | Reservation & Unit Hold | COMPLETE | One-row RESERVATION/HOLD discriminator, dealId required (V1), Unit FOR UPDATE + re-check, idempotent create, dedicated release, named expiry worker; 32 integration tests |
 | 11 | Booking | COMPLETE | ACTIVE RESERVATION→CONVERTED + Unit RESERVED→BOOKED in one tx, reservationId required + unique, idempotent create, dedicated cancel; 21 integration tests; uncommitted on `dev` at time of writing |
-| 12–13 | Payments, Documents | NOT STARTED | PaymentPlan/Obligation/Record build on stable Booking |
+| 12 | Payments | COMPLETE | Deal-specific plans, derived OVERDUE, correction-only records, idempotent provider-neutral webhook; 17 integration tests; uncommitted on `dev` at time of writing |
+| 13 | Documents | NOT STARTED | Build on stable Booking/Payment |
 | 14+ | Activity/Task, jobs/outbox, audit pass, frontend, dashboards, observability | NOT STARTED | Phase 3 Part N order |
 
 Checkpoint 7 verified status: intake pipeline; Checkpoint-5 matching reuse (no second implementation); Lead foundation (no manual create); ROUND_ROBIN (+deterministic, concurrent-safe) and manual reassignment; IdempotencyKey table + replay/conflict/race semantics; partial-index + row-lock concurrency protection; 33 integration tests; project-less enquiries open separate Leads; Activity integration deferred (no Activity table yet); PROJECT_AFFINITY/TERRITORY/MANUAL_OVERRIDE_CHECK deferred.
@@ -469,6 +489,8 @@ Checkpoint 9 verified status: Agent + Project resource model (no per-Unit schedu
 Checkpoint 10 verified status: One-row RESERVATION/HOLD discriminator (no UnitHold table); `dealId` required in V1 per Phase 3 (management Deal-less holds deferred, see DEC-026); AVAILABLE→RESERVED / AVAILABLE→ON_HOLD creation with Unit `FOR UPDATE` + in-lock re-check; unit-less Deal bound in-transaction (attach-once preserved); `RESERVATION_CREATE`/`HOLD_CREATE` idempotency incl. post-hoc replay; ACTIVE→RELEASED dedicated release + ACTIVE→EXPIRED named worker (`expireDueReservations`, per-candidate tx, conditional AVAILABLE, re-run/stale safe); no generic PATCH, no `deletedAt`, no audit/outbox rows per spec; 32 integration tests incl. 4 real concurrent claim races + release/expiry race; no Payment/Document/Activity/Task/Notification/RERA leakage.
 
 Checkpoint 11 verified status: `Booking(unitId, dealId, reservationId! @unique, bookedAt server-set, cancel triple)` — no status enum, no `deletedAt`; create converts ACTIVE type=RESERVATION only (HOLD rejects 400) via Unit `FOR UPDATE` + in-lock re-check (Booking insert + RESERVED→BOOKED + ACTIVE→CONVERTED + `BOOKING_CREATE` idempotency in one tx); no `Deal.stage` move (agent uses existing transition op); no audit/outbox rows per spec; cancel preserves row (actor + trimmed reason + timestamp), frees BOOKED→AVAILABLE, keeps CONVERTED, double-cancel 400; no PATCH/PUT/DELETE; 21 integration tests incl. 3 concurrent booking races; no Payment/Document/Activity/Task/Notification/RERA leakage.
+
+Checkpoint 12 verified status: `PaymentPlan(dealId! @unique)` + `PaymentObligation(plan, dueAmount, dueDate, PENDING/PAID stored)` + `PaymentRecord(obligation, amount, PENDING/SUCCESS/FAILED, gatewayReference?, correctsRecordId? @unique self-FK)` — no `deletedAt`; explicit idempotent `POST /payment-plans {bookingId, obligations[]}` (deal-specific schedule, unique(dealId) backstop, booking/deal state untouched); provider-neutral unauthenticated `POST /webhooks/payment-gateway` (eventId = `PAYMENT_WEBHOOK` key, tenant from obligation row, obligation `FOR UPDATE` + re-read, record + SUCCESS→PAID in one tx, already-PAID + SUCCESS → 409); OVERDUE derived at read, never written; corrections via new row + `correctsRecordId` (same-obligation enforced); no `Deal.stage`/Booking/Unit writes, no audit/outbox rows per spec, no PATCH/DELETE; 17 integration tests incl. concurrent duplicate deliveries; no Document/Activity/Task/Notification/RERA/refund/ledger leakage.
 
 ## 15. Deferred vs Out of Scope
 
@@ -521,4 +543,4 @@ Checkpoint 11 verified status: `Booking(unitId, dealId, reservationId! @unique, 
 **Stack:** JavaScript + React + Node/Express + PostgreSQL + Prisma.
 **Architecture:** Modular monolith + organization-based multi-tenancy.
 **Core principles:** Postgres is the source of truth. Tenancy is mandatory and fail-closed. Permissions/scopes, never role-name checks. Transactions guard multi-record flows. Constraints + row locks guard concurrency. Idempotency lives in a tenant-safe table. Activity = happened; Task = to-do; Enquiry = intake event; Lead = opportunity. Project repeats may reuse an OPEN Lead; project-less enquiries never auto-reuse. No bypassing auth/tenancy/transactions/idempotency. No speculative infra. No deferred features without a decision.
-**Current checkpoint:** 11 (Booking) implemented and validated; Payment (Plan/Obligation/Record on stable Booking) next.
+**Current checkpoint:** 12 (Payments) implemented and validated; Documents next.
