@@ -189,19 +189,147 @@ async function assertUnitProjectIntegrity(organizationId, data, rawPrisma) {
   }
 }
 
+async function assertCampaignIntegrity(organizationId, data, rawPrisma) {
+  if (!data.leadSourceId) return;
+  const src = await rawPrisma.leadSource.findUnique({ where: { id: data.leadSourceId } });
+  if (!src) throw new CrossTenantError(`Campaign leadSourceId ${data.leadSourceId} does not exist`);
+  if (src.organizationId !== organizationId) {
+    throw new CrossTenantError(
+      `Cross-tenant campaign: leadSource ${data.leadSourceId} belongs to org ${src.organizationId}, not ${organizationId}`
+    );
+  }
+}
+
+async function assertSameOrgReference(rawPrisma, model, id, organizationId, label) {
+  const row = await rawPrisma[model].findUnique({ where: { id } });
+  if (!row) throw new CrossTenantError(`${label} ${id} does not exist`);
+  if (row.organizationId !== organizationId) {
+    throw new CrossTenantError(
+      `Cross-tenant ${label.toLowerCase()}: ${id} belongs to org ${row.organizationId}, not ${organizationId}`
+    );
+  }
+  return row;
+}
+
+async function assertLeadIntegrity(organizationId, data, rawPrisma) {
+  if (data.contactId) {
+    const contact = await assertSameOrgReference(rawPrisma, 'contact', data.contactId, organizationId, 'Lead contactId');
+    if (contact.deletedAt) {
+      throw new CrossTenantError(`Lead cannot be attached to soft-deleted contact ${data.contactId}`);
+    }
+  }
+  if (data.projectId) {
+    const project = await assertSameOrgReference(rawPrisma, 'project', data.projectId, organizationId, 'Lead projectId');
+    if (project.deletedAt) {
+      throw new CrossTenantError(`Lead cannot be attached to soft-deleted project ${data.projectId}`);
+    }
+  }
+  if (data.requirementId) {
+    const req = await assertSameOrgReference(rawPrisma, 'requirement', data.requirementId, organizationId, 'Lead requirementId');
+    if (req.deletedAt) {
+      throw new CrossTenantError(`Lead cannot reference soft-deleted requirement ${data.requirementId}`);
+    }
+    if (data.contactId && req.contactId !== data.contactId) {
+      throw new CrossTenantError(
+        `Lead requirement ${data.requirementId} belongs to contact ${req.contactId}, not ${data.contactId}`
+      );
+    }
+  }
+  if (data.leadSourceId) {
+    await assertSameOrgReference(rawPrisma, 'leadSource', data.leadSourceId, organizationId, 'Lead leadSourceId');
+  }
+  if (data.campaignId) {
+    await assertSameOrgReference(rawPrisma, 'campaign', data.campaignId, organizationId, 'Lead campaignId');
+  }
+  if (data.assignedAgentId) {
+    const agent = await assertSameOrgReference(rawPrisma, 'user', data.assignedAgentId, organizationId, 'Lead assignedAgentId');
+    if (agent.deletedAt) {
+      throw new CrossTenantError(`Lead cannot be assigned to soft-deleted user ${data.assignedAgentId}`);
+    }
+  }
+  if (data.originEnquiryId) {
+    await assertSameOrgReference(rawPrisma, 'enquiry', data.originEnquiryId, organizationId, 'Lead originEnquiryId');
+  }
+}
+
+async function assertEnquiryIntegrity(organizationId, data, rawPrisma) {
+  if (data.contactId) {
+    const contact = await assertSameOrgReference(rawPrisma, 'contact', data.contactId, organizationId, 'Enquiry contactId');
+    if (contact.deletedAt) {
+      throw new CrossTenantError(`Enquiry cannot be attached to soft-deleted contact ${data.contactId}`);
+    }
+  }
+  if (data.projectId) {
+    const project = await assertSameOrgReference(rawPrisma, 'project', data.projectId, organizationId, 'Enquiry projectId');
+    if (project.deletedAt) {
+      throw new CrossTenantError(`Enquiry cannot be attached to soft-deleted project ${data.projectId}`);
+    }
+  }
+  if (data.leadSourceId) {
+    await assertSameOrgReference(rawPrisma, 'leadSource', data.leadSourceId, organizationId, 'Enquiry leadSourceId');
+  }
+  if (data.campaignId) {
+    await assertSameOrgReference(rawPrisma, 'campaign', data.campaignId, organizationId, 'Enquiry campaignId');
+  }
+  if (data.linkedLeadId) {
+    await assertSameOrgReference(rawPrisma, 'lead', data.linkedLeadId, organizationId, 'Enquiry linkedLeadId');
+  }
+}
+
+async function assertRoundRobinIntegrity(organizationId, data, rawPrisma) {
+  if (!data.teamId) return;
+  const team = await rawPrisma.team.findUnique({ where: { id: data.teamId } });
+  if (!team) throw new CrossTenantError(`RoundRobinState teamId ${data.teamId} does not exist`);
+  if (team.organizationId !== organizationId) {
+    throw new CrossTenantError(
+      `Cross-tenant round-robin: team ${data.teamId} belongs to org ${team.organizationId}, not ${organizationId}`
+    );
+  }
+}
+
+async function assertDealIntegrity(organizationId, data, rawPrisma) {
+  if (data.contactId) {
+    const contact = await assertSameOrgReference(rawPrisma, 'contact', data.contactId, organizationId, 'Deal contactId');
+    if (contact.deletedAt) {
+      throw new CrossTenantError(`Deal cannot be attached to soft-deleted contact ${data.contactId}`);
+    }
+  }
+  if (data.leadId) {
+    const lead = await assertSameOrgReference(rawPrisma, 'lead', data.leadId, organizationId, 'Deal leadId');
+    if (lead.deletedAt) {
+      throw new CrossTenantError(`Deal cannot be attached to soft-deleted lead ${data.leadId}`);
+    }
+    if (data.contactId && lead.contactId !== data.contactId) {
+      throw new CrossTenantError(
+        `Deal lead ${data.leadId} belongs to contact ${lead.contactId}, not ${data.contactId}`
+      );
+    }
+  }
+  if (data.unitId) {
+    const unit = await assertSameOrgReference(rawPrisma, 'unit', data.unitId, organizationId, 'Deal unitId');
+    if (unit.deletedAt) {
+      throw new CrossTenantError(`Deal cannot be attached to soft-deleted unit ${data.unitId}`);
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Wrap a single model delegate with tenant logic
 // ---------------------------------------------------------------------------
 
-function wrapModel(modelName, rawModel, organizationId) {
-  // modelName is the Prisma client property: 'user', 'role', etc.
+function wrapModel(modelName, rawModel, organizationId, guardClient) {
+  // guardClient is the Prisma client used for cross-tenant relationship
+  // guards. Inside $transaction callbacks it MUST be the transaction-bound
+  // client (rawTx) so guards see rows created earlier in the same
+  // transaction; outside transactions it is the global raw client.
+  const guards = guardClient || prisma;
   return {
     // ----- READ: filter-injected -----
     findMany: async (args = {}) => {
       assertTenantContext(organizationId);
       const where = injectWhere(args.where, organizationId);
       // Soft-delete: exclude deletedAt not null for User, Team, Contact, Requirement unless explicitly queried
-      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit'].includes(modelName)) && where.deletedAt === undefined) {
+      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit', 'lead', 'deal'].includes(modelName)) && where.deletedAt === undefined) {
         where.deletedAt = null;
       }
       return rawModel.findMany({ ...args, where });
@@ -210,7 +338,7 @@ function wrapModel(modelName, rawModel, organizationId) {
     findFirst: async (args = {}) => {
       assertTenantContext(organizationId);
       const where = injectWhere(args.where, organizationId);
-      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit'].includes(modelName)) && where.deletedAt === undefined) {
+      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit', 'lead', 'deal'].includes(modelName)) && where.deletedAt === undefined) {
         where.deletedAt = null;
       }
       return rawModel.findFirst({ ...args, where });
@@ -219,7 +347,7 @@ function wrapModel(modelName, rawModel, organizationId) {
     findFirstOrThrow: async (args = {}) => {
       assertTenantContext(organizationId);
       const where = injectWhere(args.where, organizationId);
-      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit'].includes(modelName)) && where.deletedAt === undefined) {
+      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit', 'lead', 'deal'].includes(modelName)) && where.deletedAt === undefined) {
         where.deletedAt = null;
       }
       return rawModel.findFirstOrThrow({ ...args, where });
@@ -234,7 +362,7 @@ function wrapModel(modelName, rawModel, organizationId) {
       if (!where) throw new TenantContextError('findUnique requires where');
       assertWhereTenantMatches(where, organizationId);
       const tenantWhere = injectWhere(where, organizationId);
-      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit'].includes(modelName)) && tenantWhere.deletedAt === undefined) {
+      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit', 'lead', 'deal'].includes(modelName)) && tenantWhere.deletedAt === undefined) {
         tenantWhere.deletedAt = null;
       }
       // Use findFirst with tenant filter — valid for any where shape.
@@ -247,7 +375,7 @@ function wrapModel(modelName, rawModel, organizationId) {
       if (!where) throw new TenantContextError('findUniqueOrThrow requires where');
       assertWhereTenantMatches(where, organizationId);
       const tenantWhere = injectWhere(where, organizationId);
-      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit'].includes(modelName)) && tenantWhere.deletedAt === undefined) {
+      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit', 'lead', 'deal'].includes(modelName)) && tenantWhere.deletedAt === undefined) {
         tenantWhere.deletedAt = null;
       }
       return rawModel.findFirstOrThrow({ ...args, where: tenantWhere });
@@ -256,7 +384,7 @@ function wrapModel(modelName, rawModel, organizationId) {
     count: async (args = {}) => {
       assertTenantContext(organizationId);
       const where = injectWhere(args.where, organizationId);
-      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit'].includes(modelName)) && where.deletedAt === undefined) {
+      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit', 'lead', 'deal'].includes(modelName)) && where.deletedAt === undefined) {
         where.deletedAt = null;
       }
       return rawModel.count({ ...args, where });
@@ -286,22 +414,37 @@ function wrapModel(modelName, rawModel, organizationId) {
       // verified before write). These run in the same call but not yet in a
       // DB transaction — callers needing atomicity should use $transaction.
       if (modelName === 'teamMembership') {
-        await assertMembershipTenantIntegrity(organizationId, data, prisma);
+        await assertMembershipTenantIntegrity(organizationId, data, guards);
       }
       if (modelName === 'user') {
-        await assertUserRoleTenantIntegrity(organizationId, data, prisma);
+        await assertUserRoleTenantIntegrity(organizationId, data, guards);
       }
       if (modelName === 'rolePermission') {
-        await assertRolePermissionTenantIntegrity(organizationId, data, prisma);
+        await assertRolePermissionTenantIntegrity(organizationId, data, guards);
       }
       if (modelName === 'requirement') {
-        await assertRequirementContactIntegrity(organizationId, data, prisma);
+        await assertRequirementContactIntegrity(organizationId, data, guards);
       }
       if (modelName === 'possibleDuplicate') {
-        await assertPossibleDuplicateIntegrity(organizationId, data, prisma);
+        await assertPossibleDuplicateIntegrity(organizationId, data, guards);
       }
       if (modelName === 'unit') {
-        await assertUnitProjectIntegrity(organizationId, data, prisma);
+        await assertUnitProjectIntegrity(organizationId, data, guards);
+      }
+      if (modelName === 'campaign') {
+        await assertCampaignIntegrity(organizationId, data, guards);
+      }
+      if (modelName === 'lead') {
+        await assertLeadIntegrity(organizationId, data, guards);
+      }
+      if (modelName === 'enquiry') {
+        await assertEnquiryIntegrity(organizationId, data, guards);
+      }
+      if (modelName === 'roundRobinState') {
+        await assertRoundRobinIntegrity(organizationId, data, guards);
+      }
+      if (modelName === 'deal') {
+        await assertDealIntegrity(organizationId, data, guards);
       }
 
       return rawModel.create({ ...args, data });
@@ -351,19 +494,38 @@ function wrapModel(modelName, rawModel, organizationId) {
       if (modelName === 'user' && args.data && args.data.roleId !== undefined) {
         const newRoleId = args.data.roleId;
         if (newRoleId !== null) {
-          await assertUserRoleTenantIntegrity(organizationId, { roleId: newRoleId }, prisma);
+          await assertUserRoleTenantIntegrity(organizationId, { roleId: newRoleId }, guards);
         }
       }
       if (modelName === 'requirement' && args.data && args.data.contactId !== undefined) {
-        await assertRequirementContactIntegrity(organizationId, { contactId: args.data.contactId }, prisma);
+        await assertRequirementContactIntegrity(organizationId, { contactId: args.data.contactId }, guards);
       }
       if (modelName === 'possibleDuplicate' && args.data && (args.data.contactAId !== undefined || args.data.contactBId !== undefined)) {
         const contactAId = args.data.contactAId !== undefined ? args.data.contactAId : existing.contactAId;
         const contactBId = args.data.contactBId !== undefined ? args.data.contactBId : existing.contactBId;
-        await assertPossibleDuplicateIntegrity(organizationId, { contactAId, contactBId }, prisma);
+        await assertPossibleDuplicateIntegrity(organizationId, { contactAId, contactBId }, guards);
       }
       if (modelName === 'unit' && args.data && args.data.projectId !== undefined) {
-        await assertUnitProjectIntegrity(organizationId, { projectId: args.data.projectId }, prisma);
+        await assertUnitProjectIntegrity(organizationId, { projectId: args.data.projectId }, guards);
+      }
+      if (modelName === 'campaign' && args.data && args.data.leadSourceId !== undefined) {
+        await assertCampaignIntegrity(organizationId, { leadSourceId: args.data.leadSourceId }, guards);
+      }
+      if (modelName === 'roundRobinState' && args.data && args.data.teamId !== undefined) {
+        await assertRoundRobinIntegrity(organizationId, { teamId: args.data.teamId }, guards);
+      }
+      if (modelName === 'lead' && args.data) {
+        await assertLeadIntegrity(organizationId, { contactId: existing.contactId, ...args.data }, guards);
+      }
+      if (modelName === 'enquiry' && args.data) {
+        await assertEnquiryIntegrity(organizationId, args.data, guards);
+      }
+      if (modelName === 'deal' && args.data) {
+        await assertDealIntegrity(
+          organizationId,
+          { contactId: existing.contactId, leadId: existing.leadId, ...args.data },
+          guards
+        );
       }
 
       // Perform update using the record's PK (id) which is globally unique and valid.
@@ -414,40 +576,68 @@ function wrapModel(modelName, rawModel, organizationId) {
       if (existing) {
         // Verify cross-tenant for update path if needed
         if (modelName === 'user' && args.update.roleId !== undefined && args.update.roleId !== null) {
-          await assertUserRoleTenantIntegrity(organizationId, { roleId: args.update.roleId }, prisma);
+          await assertUserRoleTenantIntegrity(organizationId, { roleId: args.update.roleId }, guards);
         }
         if (modelName === 'requirement' && args.update.contactId !== undefined) {
-          await assertRequirementContactIntegrity(organizationId, { contactId: args.update.contactId }, prisma);
+          await assertRequirementContactIntegrity(organizationId, { contactId: args.update.contactId }, guards);
         }
         if (modelName === 'possibleDuplicate' && (args.update.contactAId !== undefined || args.update.contactBId !== undefined)) {
           const contactAId = args.update.contactAId !== undefined ? args.update.contactAId : existing.contactAId;
           const contactBId = args.update.contactBId !== undefined ? args.update.contactBId : existing.contactBId;
-          await assertPossibleDuplicateIntegrity(organizationId, { contactAId, contactBId }, prisma);
+          await assertPossibleDuplicateIntegrity(organizationId, { contactAId, contactBId }, guards);
         }
         if (modelName === 'unit' && args.update.projectId !== undefined) {
-          await assertUnitProjectIntegrity(organizationId, { projectId: args.update.projectId }, prisma);
+          await assertUnitProjectIntegrity(organizationId, { projectId: args.update.projectId }, guards);
+        }
+        if (modelName === 'lead' && args.update) {
+          await assertLeadIntegrity(organizationId, { contactId: existing.contactId, ...args.update }, guards);
+        }
+        if (modelName === 'enquiry' && args.update) {
+          await assertEnquiryIntegrity(organizationId, args.update, guards);
+        }
+        if (modelName === 'deal' && args.update) {
+          await assertDealIntegrity(
+            organizationId,
+            { contactId: existing.contactId, leadId: existing.leadId, ...args.update },
+            guards
+          );
         }
         const whereForUpdate = { id: existing.id };
         return rawModel.update({ where: whereForUpdate, data: args.update });
       }
       // Create path guards
       if (modelName === 'teamMembership') {
-        await assertMembershipTenantIntegrity(organizationId, create, prisma);
+        await assertMembershipTenantIntegrity(organizationId, create, guards);
       }
       if (modelName === 'user') {
-        await assertUserRoleTenantIntegrity(organizationId, create, prisma);
+        await assertUserRoleTenantIntegrity(organizationId, create, guards);
       }
       if (modelName === 'rolePermission') {
-        await assertRolePermissionTenantIntegrity(organizationId, create, prisma);
+        await assertRolePermissionTenantIntegrity(organizationId, create, guards);
       }
       if (modelName === 'requirement') {
-        await assertRequirementContactIntegrity(organizationId, create, prisma);
+        await assertRequirementContactIntegrity(organizationId, create, guards);
       }
       if (modelName === 'possibleDuplicate') {
-        await assertPossibleDuplicateIntegrity(organizationId, create, prisma);
+        await assertPossibleDuplicateIntegrity(organizationId, create, guards);
       }
       if (modelName === 'unit') {
-        await assertUnitProjectIntegrity(organizationId, create, prisma);
+        await assertUnitProjectIntegrity(organizationId, create, guards);
+      }
+      if (modelName === 'campaign') {
+        await assertCampaignIntegrity(organizationId, create, guards);
+      }
+      if (modelName === 'lead') {
+        await assertLeadIntegrity(organizationId, create, guards);
+      }
+      if (modelName === 'enquiry') {
+        await assertEnquiryIntegrity(organizationId, create, guards);
+      }
+      if (modelName === 'roundRobinState') {
+        await assertRoundRobinIntegrity(organizationId, create, guards);
+      }
+      if (modelName === 'deal') {
+        await assertDealIntegrity(organizationId, create, guards);
       }
       return rawModel.create({ data: create });
     },
@@ -500,6 +690,15 @@ function createTenantPrisma(organizationId) {
     possibleDuplicate: wrapModel('possibleDuplicate', prisma.possibleDuplicate, organizationId),
     project: wrapModel('project', prisma.project, organizationId),
     unit: wrapModel('unit', prisma.unit, organizationId),
+    leadSource: wrapModel('leadSource', prisma.leadSource, organizationId),
+    campaign: wrapModel('campaign', prisma.campaign, organizationId),
+    enquiry: wrapModel('enquiry', prisma.enquiry, organizationId),
+    lead: wrapModel('lead', prisma.lead, organizationId),
+    assignmentRule: wrapModel('assignmentRule', prisma.assignmentRule, organizationId),
+    roundRobinState: wrapModel('roundRobinState', prisma.roundRobinState, organizationId),
+    idempotencyKey: wrapModel('idempotencyKey', prisma.idempotencyKey, organizationId),
+    deal: wrapModel('deal', prisma.deal, organizationId),
+    auditLog: wrapModel('auditLog', prisma.auditLog, organizationId),
 
     // Preserve raw access for advanced needs, but clearly marked as unscoped
     _raw: prisma,
@@ -518,20 +717,33 @@ function createTenantPrisma(organizationId) {
       }
       if (typeof arg === 'function') {
         return prisma.$transaction(async (rawTx) => {
-          // Create a tenant-scoped tx mirroring the same wrapping but bound to rawTx
+          // Create a tenant-scoped tx mirroring the same wrapping but bound to rawTx.
+          // Guards also bind to rawTx so they observe uncommitted rows written
+          // earlier in the same transaction (e.g. intake creating Contact then
+          // Requirement/Lead referencing it).
+          const txWrap = (modelName, rawDelegate) => wrapModel(modelName, rawDelegate, organizationId, rawTx);
           const txClient = {
             organization: rawTx.organization,
             permission: rawTx.permission,
-            role: wrapModel('role', rawTx.role, organizationId),
-            team: wrapModel('team', rawTx.team, organizationId),
-            user: wrapModel('user', rawTx.user, organizationId),
-            teamMembership: wrapModel('teamMembership', rawTx.teamMembership, organizationId),
-            rolePermission: wrapModel('rolePermission', rawTx.rolePermission, organizationId),
-            contact: wrapModel('contact', rawTx.contact, organizationId),
-            requirement: wrapModel('requirement', rawTx.requirement, organizationId),
-            possibleDuplicate: wrapModel('possibleDuplicate', rawTx.possibleDuplicate, organizationId),
-            project: wrapModel('project', rawTx.project, organizationId),
-            unit: wrapModel('unit', rawTx.unit, organizationId),
+            role: txWrap('role', rawTx.role),
+            team: txWrap('team', rawTx.team),
+            user: txWrap('user', rawTx.user),
+            teamMembership: txWrap('teamMembership', rawTx.teamMembership),
+            rolePermission: txWrap('rolePermission', rawTx.rolePermission),
+            contact: txWrap('contact', rawTx.contact),
+            requirement: txWrap('requirement', rawTx.requirement),
+            possibleDuplicate: txWrap('possibleDuplicate', rawTx.possibleDuplicate),
+            project: txWrap('project', rawTx.project),
+            unit: txWrap('unit', rawTx.unit),
+            leadSource: txWrap('leadSource', rawTx.leadSource),
+            campaign: txWrap('campaign', rawTx.campaign),
+            enquiry: txWrap('enquiry', rawTx.enquiry),
+            lead: txWrap('lead', rawTx.lead),
+            assignmentRule: txWrap('assignmentRule', rawTx.assignmentRule),
+            roundRobinState: txWrap('roundRobinState', rawTx.roundRobinState),
+            idempotencyKey: txWrap('idempotencyKey', rawTx.idempotencyKey),
+            deal: txWrap('deal', rawTx.deal),
+            auditLog: txWrap('auditLog', rawTx.auditLog),
             _raw: rawTx,
             _organizationId: organizationId,
           };
@@ -555,3 +767,4 @@ module.exports = {
   flattenWhere,
   injectWhere,
 };
+

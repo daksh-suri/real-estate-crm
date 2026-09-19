@@ -14,6 +14,12 @@ const userTeamsRoutes = require('./modules/teams/userTeamsRoutes');
 const contactRoutes = require('./modules/contacts/routes');
 const requirementRoutes = require('./modules/requirements/routes');
 const { projectRouter, unitRouter } = require('./modules/property/routes');
+const enquiryRoutes = require('./modules/enquiries/routes');
+const leadRoutes = require('./modules/leads/routes');
+const leadSourceRoutes = require('./modules/leadSources/routes');
+const campaignRoutes = require('./modules/campaigns/routes');
+const assignmentRuleRoutes = require('./modules/assignmentRules/routes');
+const dealRoutes = require('./modules/deals/routes');
 const notFoundHandler = require('./middleware/notFoundHandler');
 const errorHandler = require('./middleware/errorHandler');
 
@@ -48,6 +54,12 @@ app.use('/contacts', contactRoutes);
 app.use('/requirements', requirementRoutes);
 app.use('/projects', projectRouter);
 app.use('/units', unitRouter);
+app.use('/enquiries', enquiryRoutes);
+app.use('/leads', leadRoutes);
+app.use('/lead-sources', leadSourceRoutes);
+app.use('/campaigns', campaignRoutes);
+app.use('/assignment-rules', assignmentRuleRoutes);
+app.use('/deals', dealRoutes);
 app.use('/protected', demoAuthzRoutes);
 
 // 404 handler
