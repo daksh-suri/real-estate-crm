@@ -1,4 +1,5 @@
 const { z } = require('zod');
+const { validate } = require('../../lib/validate');
 
 const projectStatuses = ['PLANNED', 'ACTIVE', 'ON_HOLD', 'COMPLETED', 'CANCELLED'];
 const unitAvailabilities = ['AVAILABLE', 'ON_HOLD', 'RESERVED', 'BOOKED', 'BLOCKED'];
@@ -46,16 +47,6 @@ const unitIdParamSchema = z.object({
   unitId: z.string().uuid(),
 });
 
-function validate(schema, data) {
-  const result = schema.safeParse(data);
-  if (!result.success) {
-    const err = new Error('Validation failed');
-    err.statusCode = 400;
-    err.details = result.error.flatten();
-    throw err;
-  }
-  return result.data;
-}
 
 module.exports = {
   projectStatuses,

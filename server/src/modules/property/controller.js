@@ -11,10 +11,6 @@ const {
 } = require('./validation');
 const service = require('./service');
 
-function orgId(req) {
-  return req.auth.organizationId;
-}
-
 // ---------------------------------------------------------------------------
 // Projects
 // ---------------------------------------------------------------------------
@@ -47,7 +43,7 @@ async function listProjects(req, res, next) {
 async function getProject(req, res, next) {
   try {
     const { projectId } = validate(projectIdParamSchema, req.params);
-    const project = await service.getProject({ tenantPrisma: req.tenantPrisma, organizationId: orgId(req), projectId });
+    const project = await service.getProject({ tenantPrisma: req.tenantPrisma, organizationId: req.auth.organizationId, projectId });
     return res.json(project);
   } catch (err) {
     return next(err);
@@ -60,7 +56,7 @@ async function updateProject(req, res, next) {
     const data = validate(updateProjectSchema, req.body);
     const updated = await service.updateProject({
       tenantPrisma: req.tenantPrisma,
-      organizationId: orgId(req),
+      organizationId: req.auth.organizationId,
       projectId,
       data,
     });
@@ -73,7 +69,7 @@ async function updateProject(req, res, next) {
 async function deleteProject(req, res, next) {
   try {
     const { projectId } = validate(projectIdParamSchema, req.params);
-    const deleted = await service.deleteProject({ tenantPrisma: req.tenantPrisma, organizationId: orgId(req), projectId });
+    const deleted = await service.deleteProject({ tenantPrisma: req.tenantPrisma, organizationId: req.auth.organizationId, projectId });
     return res.json(deleted);
   } catch (err) {
     return next(err);
@@ -90,7 +86,7 @@ async function createUnit(req, res, next) {
     const data = validate(createUnitSchema, req.body);
     const unit = await service.createUnit({
       tenantPrisma: req.tenantPrisma,
-      organizationId: orgId(req),
+      organizationId: req.auth.organizationId,
       projectId,
       data,
     });
@@ -105,7 +101,7 @@ async function listUnitsForProject(req, res, next) {
     const { projectId } = validate(projectIdParamSchema, req.params);
     const units = await service.listUnitsForProject({
       tenantPrisma: req.tenantPrisma,
-      organizationId: orgId(req),
+      organizationId: req.auth.organizationId,
       projectId,
     });
     return res.json(units);

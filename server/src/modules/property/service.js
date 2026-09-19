@@ -258,6 +258,7 @@ async function deleteUnit({ tenantPrisma, unitId }) {
 }
 
 module.exports = {
+  resolveProject,
   createProject,
   listProjects,
   getProject,

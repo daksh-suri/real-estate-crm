@@ -1,13 +1,16 @@
 // Prisma schema for Real Estate CRM
 // Primary Source of Truth: docs/CRM_Implementation_Blueprint_Phase3.md
-// Checkpoint 6 — Property Hierarchy (Project → Unit)
+// Checkpoint 11 — Booking (Booking; Reservation ACTIVE → CONVERTED,
+// Unit RESERVED → BOOKED, one booking per reservation)
 //
 // TENANT CLASSIFICATION
 // ---------------------
 // GLOBAL (no organizationId): Permission, Organization (is the tenant itself)
 // TENANT-SCOPED (organizationId NOT NULL, indexed, FK to Organization):
 //   Role, Team, User, RolePermission, TeamMembership, RefreshToken,
-//   Contact, Requirement, PossibleDuplicate, Project, Unit
+//   Contact, Requirement, PossibleDuplicate, Project, Unit,
+//   LeadSource, Campaign, Enquiry, Lead, AssignmentRule, RoundRobinState,
+//   IdempotencyKey, Deal, AuditLog, SiteVisit, Reservation, Booking
 //
 // Tenant scoping is enforced centrally via server/src/lib/prisma.js and
 // server/src/lib/tenant.js — see those files for the fail-closed extension.
@@ -66,6 +69,73 @@ enum UnitAvailability {
   BLOCKED
 }
 
+enum EnquiryChannel {
+  PORTAL
+  WALK_IN
+  PHONE
+  OWNED_FORM
+}
+
+enum LeadStatus {
+  OPEN
+  CONVERTED
+  DISQUALIFIED
+}
+
+enum AssignmentSource {
+  MANUAL
+  AUTO
+  UNASSIGNED
+}
+
+enum AssignmentRuleType {
+  ROUND_ROBIN
+}
+
+// Fixed V1 Deal pipeline (Phase 3 #7). The first nine stages form the normal
+// forward progression; CLOSED_LOST is a parallel terminal outcome reachable
+// from any active stage. No custom/per-org/per-project stages in V1.
+// V1 visit lifecycle. Terminal/historical states (COMPLETED, CANCELLED,
+// NO_SHOW) never block future scheduling and have no exits.
+enum SiteVisitStatus {
+  SCHEDULED
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum DealStage {
+  NEW
+  QUALIFIED
+  SITE_VISIT_SCHEDULED
+  NEGOTIATION
+  RESERVATION
+  BOOKING_CONFIRMED
+  AGREEMENT_SIGNED
+  PAYMENT_IN_PROGRESS
+  CLOSED_WON
+  CLOSED_LOST
+}
+
+// V1 reservation discriminator. HOLD reuses the Reservation row (no separate
+// UnitHold table); the Unit.availabilityStatus effect differs (ON_HOLD vs
+// RESERVED) but the lock-and-recheck machinery is identical.
+enum ReservationType {
+  RESERVATION
+  HOLD
+}
+
+// V1 reservation lifecycle. CONVERTED is reserved for Checkpoint 11 Booking
+// and is never produced here. EXPIRED/RELEASED are terminal in this
+// checkpoint and never transition back to ACTIVE.
+enum ReservationStatus {
+  ACTIVE
+  EXPIRED
+  CONVERTED
+  RELEASED
+}
+
 // ---------------------------------------------------------------------------
 // GLOBAL — Organization is the tenant root (not tenant-scoped itself)
 // ---------------------------------------------------------------------------
@@ -92,6 +162,18 @@ model Organization {
   possibleDuplicates  PossibleDuplicate[]
   projects            Project[]
   units               Unit[]
+  leadSources         LeadSource[]
+  campaigns           Campaign[]
+  enquiries           Enquiry[]
+  leads               Lead[]
+  assignmentRules     AssignmentRule[]
+  roundRobinStates    RoundRobinState[]
+  idempotencyKeys     IdempotencyKey[]
+  deals               Deal[]
+  auditLogs           AuditLog[]
+  siteVisits          SiteVisit[]
+  reservations        Reservation[]
+  bookings            Booking[]
 
   @@map("organizations")
 }
@@ -168,6 +250,7 @@ model Team {
 
   organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   memberships  TeamMembership[]
+  roundRobinStates RoundRobinState[]
 
   @@unique([organizationId, name])
   @@index([organizationId])
@@ -198,6 +281,10 @@ model Contact {
   requirements Requirement[]
   possibleDuplicatesA PossibleDuplicate[] @relation("ContactA")
   possibleDuplicatesB PossibleDuplicate[] @relation("ContactB")
+  enquiries Enquiry[]
+  leads     Lead[]
+  deals     Deal[]
+  siteVisits SiteVisit[]
 
   // Deterministic duplicate protection: same org + same normalized email + same normalized phone (both non-null) is considered same identity
   @@unique([organizationId, normalizedEmail, normalizedPhone])
@@ -228,6 +315,7 @@ model Requirement {
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   contact      Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  leads        Lead[]
 
   @@index([organizationId])
   @@index([contactId])
@@ -259,6 +347,190 @@ model PossibleDuplicate {
 }
 
 // ---------------------------------------------------------------------------
+// TENANT-SCOPED — Intake & Lead Foundation (Checkpoint 7)
+// Enquiry = raw intake event (append-only, never physically deleted).
+// Lead = working sales record. One active OPEN Lead per
+// Organization + Contact + Project (partial unique index in migration;
+// project-less Leads intentionally allow multiples per Contact).
+// Requirement belongs to Contact; Lead.requirementId is a reference only.
+// ---------------------------------------------------------------------------
+
+model LeadSource {
+  id             String   @id @default(uuid())
+  organizationId String
+  name           String
+  type           String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  campaigns    Campaign[]
+  enquiries    Enquiry[]
+  leads        Lead[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+  @@map("lead_sources")
+}
+
+model Campaign {
+  id             String    @id @default(uuid())
+  organizationId String
+  name           String
+  leadSourceId   String?
+  startDate      DateTime?
+  endDate        DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  leadSource   LeadSource?  @relation(fields: [leadSourceId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  enquiries    Enquiry[]
+  leads        Lead[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+  @@index([leadSourceId])
+  @@map("campaigns")
+}
+
+model Enquiry {
+  id             String         @id @default(uuid())
+  organizationId String
+  channel        EnquiryChannel
+  leadSourceId   String?
+  campaignId     String?
+  // Channel-specific payload preserved verbatim; downstream is channel-agnostic.
+  rawPayload     Json           @default("{}")
+  contactId      String?
+  projectId      String?
+  linkedLeadId   String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  contact      Contact?     @relation(fields: [contactId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  project      Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  leadSource   LeadSource?  @relation(fields: [leadSourceId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  campaign     Campaign?    @relation(fields: [campaignId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  // The working Lead this intake event is attached to (repeat enquiries
+  // attach to the existing OPEN Lead; origin is tracked on Lead).
+  linkedLead   Lead?        @relation("EnquiryLinkedLead", fields: [linkedLeadId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  // The Lead (if any) that this Enquiry originated (1:1, enforced via
+  // Lead.originEnquiryId @unique). A repeat Enquiry attached to an existing
+  // Lead is NOT its origin.
+  originLead   Lead?        @relation("LeadOrigin")
+
+  @@index([organizationId])
+  @@index([organizationId, contactId])
+  @@index([organizationId, projectId])
+  @@index([organizationId, channel])
+  @@index([linkedLeadId])
+  @@index([contactId])
+  @@map("enquiries")
+}
+
+model Lead {
+  id               String           @id @default(uuid())
+  organizationId   String
+  contactId        String
+  projectId        String?
+  requirementId    String?
+  leadSourceId     String?
+  campaignId       String?
+  originEnquiryId  String           @unique
+  assignedAgentId  String?
+  assignmentSource AssignmentSource @default(UNASSIGNED)
+  assignedAt       DateTime?
+  status           LeadStatus       @default(OPEN)
+  deletedAt        DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  contact      Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  project      Project?     @relation(fields: [projectId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  requirement  Requirement? @relation(fields: [requirementId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  leadSource   LeadSource?  @relation(fields: [leadSourceId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  campaign     Campaign?    @relation(fields: [campaignId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  // Restrict: origin Enquiry is append-only history; it must never disappear
+  // under the Lead it created. Enquiries themselves have no delete endpoint.
+  originEnquiry  Enquiry        @relation("LeadOrigin", fields: [originEnquiryId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  linkedEnquiries Enquiry[]     @relation("EnquiryLinkedLead")
+  assignedAgent  User?          @relation("LeadAssignee", fields: [assignedAgentId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  deals          Deal[]
+
+  // NOTE: the "one OPEN Lead per Org+Contact+Project" invariant is enforced
+  // by a partial unique index in the migration (not expressible in Prisma):
+  //   WHERE status='OPEN' AND deletedAt IS NULL AND projectId IS NOT NULL.
+  // Project-less Leads (projectId NULL) intentionally allow multiples.
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@index([organizationId, contactId])
+  @@index([organizationId, projectId])
+  @@index([organizationId, assignedAgentId])
+  @@index([contactId])
+  @@index([deletedAt])
+  @@map("leads")
+}
+
+model AssignmentRule {
+  id             String             @id @default(uuid())
+  organizationId String
+  type           AssignmentRuleType
+  // Evaluation order, lowest first. Field name matches Phase 3 ("order").
+  order          Int                @default(0)
+  // Type-specific params only (e.g. { teamId }), never logic. ROUND_ROBIN
+  // requires { teamId }. PROJECT_AFFINITY/TERRITORY arrive in later passes.
+  config         Json               @default("{}")
+  active         Boolean            @default(true)
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([organizationId])
+  @@index([organizationId, active])
+  @@map("assignment_rules")
+}
+
+model RoundRobinState {
+  id                 String   @id @default(uuid())
+  organizationId     String
+  teamId             String   @unique
+  // Last agent assigned via this counter (plain id, no FK: the agent row may
+  // later be deactivated/deleted and must never block the counter row).
+  lastAssignedUserId String?
+  // Position in the ordered eligible-agent list at assignment time.
+  lastIndex          Int      @default(-1)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  team         Team         @relation(fields: [teamId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([organizationId, teamId])
+  @@index([organizationId])
+  @@map("round_robin_states")
+}
+
+model IdempotencyKey {
+  id               String   @id @default(uuid())
+  organizationId   String
+  key              String
+  operationType    String   @default("ENQUIRY_INTAKE")
+  requestHash      String
+  responseSnapshot Json?
+  createdAt        DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([organizationId, key, operationType])
+  @@index([organizationId])
+  @@map("idempotency_keys")
+}
+
+// ---------------------------------------------------------------------------
 // TENANT-SCOPED — Property Hierarchy (Checkpoint 6)
 // Organization → Project → Unit. Phase 3: Project (name, location, status),
 // Unit (projectId, identifier, totalCost, availabilityStatus).
@@ -278,6 +550,9 @@ model Project {
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   units        Unit[]
+  enquiries    Enquiry[]
+  leads        Lead[]
+  siteVisits   SiteVisit[]
 
   @@unique([organizationId, name])
   @@index([organizationId])
@@ -301,6 +576,9 @@ model Unit {
   // Restrict (not Cascade): a Project with Units must never be physically
   // destroyed — Units are future booking history. Lifecycle is soft-delete.
   project      Project      @relation(fields: [projectId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  deals        Deal[]
+  reservations Reservation[]
+  bookings     Booking[]
 
   @@unique([projectId, identifier])
   @@index([organizationId])
@@ -329,6 +607,8 @@ model User {
   role         Role?            @relation(fields: [roleId], references: [id], onDelete: SetNull, onUpdate: Cascade)
   memberships  TeamMembership[]
   refreshTokens RefreshToken[]
+  assignedLeads Lead[]          @relation("LeadAssignee")
+  siteVisits    SiteVisit[]     @relation("SiteVisitAgent")
 
   // Tenant-scoped unique: same email can exist in different organizations,
   // but not twice within one organization.
@@ -380,4 +660,191 @@ model RolePermission {
   @@index([roleId])
   @@index([permissionId])
   @@map("role_permissions")
+}
+
+// ---------------------------------------------------------------------------
+// TENANT-SCOPED — Deal & Pipeline (Checkpoint 8)
+// Deal is the working sales record created by converting an OPEN Lead.
+// The pipeline is FIXED for V1 (DealStage enum): nine forward stages plus
+// CLOSED_LOST as a parallel terminal outcome. No custom/per-org/per-project
+// stages, no dealType/RERA fields (DEFERRED — see DEC-021).
+// Deal.stageHistory is derived from audit_logs, not a separate table.
+// ---------------------------------------------------------------------------
+
+model Deal {
+  id             String    @id @default(uuid())
+  organizationId String
+  contactId      String
+  leadId         String
+  // Nullable until reservation (Checkpoint 9+). Never edited by reservation
+  // logic in this checkpoint; availabilityStatus is untouched by Deal flows.
+  unitId         String?
+  stage          DealStage @default(NEW)
+  // Required when (and only when) stage is CLOSED_LOST.
+  lostReason     String?
+  deletedAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  contact      Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  lead         Lead         @relation(fields: [leadId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  // Restrict (not Cascade/SetNull): a Unit referenced by a Deal is future
+  // booking history and must never disappear or detach silently.
+  unit         Unit?        @relation(fields: [unitId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  siteVisits   SiteVisit[]
+  reservations Reservation[]
+  bookings     Booking[]
+
+  @@index([organizationId])
+  @@index([organizationId, stage])
+  @@index([organizationId, leadId])
+  @@index([contactId])
+  @@index([deletedAt])
+  @@map("deals")
+}
+
+// ---------------------------------------------------------------------------
+// TENANT-SCOPED — Shared audit trail (first writer: Checkpoint 8 Deal)
+// Append-only. actorId is a plain String (no FK) so history survives actor
+// deactivation/deletion. Future modules reuse this table; never create
+// per-entity history tables (Deal.stageHistory derives from these rows).
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id             String   @id @default(uuid())
+  organizationId String
+  actorId        String
+  entityType     String
+  entityId       String
+  action         String
+  beforeState    Json?
+  afterState     Json?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([organizationId])
+  @@index([organizationId, entityType, entityId])
+  @@map("audit_logs")
+}
+
+// ---------------------------------------------------------------------------
+// TENANT-SCOPED — Site Visit scheduling (Checkpoint 9)
+// A visit occupies two V1 resources: Agent (User) + Property (Project).
+// Per-Unit scheduling does not exist; Unit rows are never read or written by
+// this module. No deletedAt: cancellation (CANCELLED) is the removal path and
+// history must remain queryable; only SCHEDULED/CONFIRMED rows participate in
+// conflict checks. dealId is optional context — scheduling never mutates Deal.
+// ---------------------------------------------------------------------------
+
+model SiteVisit {
+  id                 String          @id @default(uuid())
+  organizationId     String
+  agentId            String
+  projectId          String
+  contactId          String
+  dealId             String?
+  scheduledAt        DateTime
+  durationMinutes    Int             @default(60)
+  status             SiteVisitStatus @default(SCHEDULED)
+  cancelledBy        String?
+  cancellationReason String?
+  cancelledAt        DateTime?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  // Restrict: a scheduled visit is history-in-progress; the agent row must
+  // never disappear under it (users are soft-deleted in practice anyway).
+  agent        User         @relation("SiteVisitAgent", fields: [agentId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  contact      Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  // SetNull: the visit survives deal deletion; the deal never owns the visit.
+  deal         Deal?        @relation(fields: [dealId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+
+  @@index([organizationId])
+  @@index([organizationId, agentId, scheduledAt])
+  @@index([organizationId, projectId, scheduledAt])
+  @@index([organizationId, status])
+  @@index([contactId])
+  @@index([dealId])
+  @@map("site_visits")
+}
+
+// ---------------------------------------------------------------------------
+// TENANT-SCOPED — Reservation & Unit Hold (Checkpoint 10)
+// HOLD reuses this row with type=HOLD (no separate UnitHold table).
+// Unit.availabilityStatus is the authoritative inventory state; this row's
+// status is the record lifecycle. Both mutate in the same transaction while
+// the Unit row is locked FOR UPDATE. No deletedAt: EXPIRED/RELEASED preserve
+// history. dealId is required per Phase 3 (V1 rule — management holds without
+// a Deal are deferred, see DEC-026). CONVERTED is reserved for Checkpoint 11.
+// ---------------------------------------------------------------------------
+
+model Reservation {
+  id             String            @id @default(uuid())
+  organizationId String
+  unitId         String
+  dealId         String
+  type           ReservationType
+  expiresAt      DateTime?
+  status         ReservationStatus @default(ACTIVE)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  // Restrict: a reserved/held Unit is inventory history-in-progress; it must
+  // never disappear under its Reservation.
+  unit         Unit         @relation(fields: [unitId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  // Restrict: a Reservation is sales history; the Deal must never disappear
+  // or detach silently (no SetNull — dealId is required in V1).
+  deal         Deal         @relation(fields: [dealId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  // One Booking per Reservation at the schema level (backstop for the
+  // ACTIVE re-check): a second conversion attempt fails instead of forking.
+  booking      Booking?
+
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@index([unitId])
+  @@index([dealId])
+  @@map("reservations")
+}
+
+// ---------------------------------------------------------------------------
+// TENANT-SCOPED — Booking (Checkpoint 11)
+// Conversion of one ACTIVE type=RESERVATION row: Booking insert +
+// Unit RESERVED → BOOKED + Reservation ACTIVE → CONVERTED, atomically under
+// the Unit FOR UPDATE lock. Lifecycle is the shared cancel triple (no status
+// enum, no deletedAt): a cancelled Booking is preserved history. reservationId
+// is required + unique (explicit chain; Phase 3 omits it but conversion
+// validity cannot be proven from unit+deal history rows alone).
+// No Deal.stage move here — the agent uses the existing stage-transition op.
+// ---------------------------------------------------------------------------
+
+model Booking {
+  id             String    @id @default(uuid())
+  organizationId String
+  unitId         String
+  dealId         String
+  reservationId  String    @unique
+  bookedAt       DateTime  @default(now())
+  cancelledBy    String?
+  cancellationReason String?
+  cancelledAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  // Restrict: a booked Unit is Tier-1 history and must never disappear or
+  // detach silently under its Booking.
+  unit         Unit         @relation(fields: [unitId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  // Restrict: same history argument as Reservation — no SetNull.
+  deal         Deal         @relation(fields: [dealId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  reservation  Reservation  @relation(fields: [reservationId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([organizationId])
+  @@index([unitId])
+  @@index([dealId])
+  @@map("bookings")
 }

@@ -92,15 +92,4 @@ async function authenticate(req, _res, next) {
   }
 }
 
-// Optional authenticate — does not fail if no token, just attaches null
-async function optionalAuthenticate(req, _res, next) {
-  const authHeader = req.headers.authorization || req.headers.Authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    req.user = null;
-    req.auth = null;
-    return next();
-  }
-  return authenticate(req, _res, next);
-}
-
-module.exports = { authenticate, optionalAuthenticate };
+module.exports = { authenticate };
