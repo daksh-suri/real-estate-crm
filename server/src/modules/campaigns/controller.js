@@ -7,14 +7,10 @@ const {
 } = require('./validation');
 const service = require('./service');
 
-function orgId(req) {
-  return req.auth.organizationId;
-}
-
 async function create(req, res, next) {
   try {
     const data = validate(createCampaignSchema, req.body);
-    const row = await service.createCampaign({ tenantPrisma: req.tenantPrisma, organizationId: orgId(req), data });
+    const row = await service.createCampaign({ tenantPrisma: req.tenantPrisma, organizationId: req.auth.organizationId, data });
     return res.status(201).json(row);
   } catch (err) {
     return next(err);
@@ -52,7 +48,7 @@ async function update(req, res, next) {
     const data = validate(updateCampaignSchema, req.body);
     const updated = await service.updateCampaign({
       tenantPrisma: req.tenantPrisma,
-      organizationId: orgId(req),
+      organizationId: req.auth.organizationId,
       campaignId,
       data,
     });

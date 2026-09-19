@@ -1,4 +1,5 @@
 const { z } = require('zod');
+const { validate } = require('../../lib/validate');
 
 const leadStatuses = ['OPEN', 'CONVERTED', 'DISQUALIFIED'];
 
@@ -26,16 +27,6 @@ const listQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).optional(),
 });
 
-function validate(schema, data) {
-  const result = schema.safeParse(data);
-  if (!result.success) {
-    const err = new Error('Validation failed');
-    err.statusCode = 400;
-    err.details = result.error.flatten();
-    throw err;
-  }
-  return result.data;
-}
 
 module.exports = {
   leadStatuses,

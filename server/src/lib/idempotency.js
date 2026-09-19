@@ -68,6 +68,53 @@ async function resolveIdempotencyConflict({ tx, organizationId, key, operationTy
   throw new IdempotentReplay(existing.responseSnapshot);
 }
 
+function idempotencyKeyFrom(req) {
+  const raw = req.headers['idempotency-key'];
+  if (raw === undefined || raw === null) return null;
+  const key = String(raw).trim();
+  return key || null;
+}
+
+function assertIdempotencyKey(key) {
+  if (key !== null && (key.length < 1 || key.length > 100)) {
+    const err = new Error('Idempotency-Key must be 1-100 characters');
+    err.statusCode = 400;
+    throw err;
+  }
+}
+
+// Shared idempotent-create wrapper (Checkpoints 9–11 shape): pre-check the
+// key, run the transaction, and converge P2002/409 losers against the
+// committed winner. Enquiry intake keeps its own retry-loop variant.
+async function idempotentCreate({ client, organizationId, key, operationType, hashInput, retryMessage, run }) {
+  const requestHash = canonicalHash(hashInput);
+  if (key) {
+    const existing = await findRecord({ client, organizationId, key, operationType });
+    if (existing) {
+      if (existing.requestHash !== requestHash) throw new IdempotencyConflict();
+      throw new IdempotentReplay(existing.responseSnapshot);
+    }
+  }
+  try {
+    return await run(requestHash);
+  } catch (err) {
+    if (!key) throw err;
+    if (err.code === 'P2002' || err.statusCode === 409) {
+      const existing = await findRecord({ client, organizationId, key, operationType });
+      if (existing) {
+        if (existing.requestHash !== requestHash) throw new IdempotencyConflict();
+        throw new IdempotentReplay(existing.responseSnapshot);
+      }
+      if (err.code === 'P2002') {
+        const retry = new Error(retryMessage || 'Concurrent request conflict, please retry');
+        retry.statusCode = 409;
+        throw retry;
+      }
+    }
+    throw err;
+  }
+}
+
 module.exports = {
   OPERATION_ENQUIRY_INTAKE,
   canonicalHash,
@@ -76,4 +123,7 @@ module.exports = {
   findRecord,
   recordIdempotency,
   resolveIdempotencyConflict,
+  idempotencyKeyFrom,
+  assertIdempotencyKey,
+  idempotentCreate,
 };

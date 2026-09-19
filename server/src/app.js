@@ -20,6 +20,9 @@ const leadSourceRoutes = require('./modules/leadSources/routes');
 const campaignRoutes = require('./modules/campaigns/routes');
 const assignmentRuleRoutes = require('./modules/assignmentRules/routes');
 const dealRoutes = require('./modules/deals/routes');
+const siteVisitRoutes = require('./modules/siteVisits/routes');
+const reservationRoutes = require('./modules/reservations/routes');
+const bookingRoutes = require('./modules/bookings/routes');
 const notFoundHandler = require('./middleware/notFoundHandler');
 const errorHandler = require('./middleware/errorHandler');
 
@@ -60,6 +63,9 @@ app.use('/lead-sources', leadSourceRoutes);
 app.use('/campaigns', campaignRoutes);
 app.use('/assignment-rules', assignmentRuleRoutes);
 app.use('/deals', dealRoutes);
+app.use('/site-visits', siteVisitRoutes);
+app.use('/reservations', reservationRoutes);
+app.use('/bookings', bookingRoutes);
 app.use('/protected', demoAuthzRoutes);
 
 // 404 handler

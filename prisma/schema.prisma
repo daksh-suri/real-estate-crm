@@ -1,6 +1,7 @@
 // Prisma schema for Real Estate CRM
 // Primary Source of Truth: docs/CRM_Implementation_Blueprint_Phase3.md
-// Checkpoint 8 — Deal & Pipeline (Deal, DealStage, shared audit_logs)
+// Checkpoint 11 — Booking (Booking; Reservation ACTIVE → CONVERTED,
+// Unit RESERVED → BOOKED, one booking per reservation)
 //
 // TENANT CLASSIFICATION
 // ---------------------
@@ -9,7 +10,7 @@
 //   Role, Team, User, RolePermission, TeamMembership, RefreshToken,
 //   Contact, Requirement, PossibleDuplicate, Project, Unit,
 //   LeadSource, Campaign, Enquiry, Lead, AssignmentRule, RoundRobinState,
-//   IdempotencyKey, Deal, AuditLog
+//   IdempotencyKey, Deal, AuditLog, SiteVisit, Reservation, Booking
 //
 // Tenant scoping is enforced centrally via server/src/lib/prisma.js and
 // server/src/lib/tenant.js — see those files for the fail-closed extension.
@@ -94,6 +95,16 @@ enum AssignmentRuleType {
 // Fixed V1 Deal pipeline (Phase 3 #7). The first nine stages form the normal
 // forward progression; CLOSED_LOST is a parallel terminal outcome reachable
 // from any active stage. No custom/per-org/per-project stages in V1.
+// V1 visit lifecycle. Terminal/historical states (COMPLETED, CANCELLED,
+// NO_SHOW) never block future scheduling and have no exits.
+enum SiteVisitStatus {
+  SCHEDULED
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
 enum DealStage {
   NEW
   QUALIFIED
@@ -105,6 +116,24 @@ enum DealStage {
   PAYMENT_IN_PROGRESS
   CLOSED_WON
   CLOSED_LOST
+}
+
+// V1 reservation discriminator. HOLD reuses the Reservation row (no separate
+// UnitHold table); the Unit.availabilityStatus effect differs (ON_HOLD vs
+// RESERVED) but the lock-and-recheck machinery is identical.
+enum ReservationType {
+  RESERVATION
+  HOLD
+}
+
+// V1 reservation lifecycle. CONVERTED is reserved for Checkpoint 11 Booking
+// and is never produced here. EXPIRED/RELEASED are terminal in this
+// checkpoint and never transition back to ACTIVE.
+enum ReservationStatus {
+  ACTIVE
+  EXPIRED
+  CONVERTED
+  RELEASED
 }
 
 // ---------------------------------------------------------------------------
@@ -142,6 +171,9 @@ model Organization {
   idempotencyKeys     IdempotencyKey[]
   deals               Deal[]
   auditLogs           AuditLog[]
+  siteVisits          SiteVisit[]
+  reservations        Reservation[]
+  bookings            Booking[]
 
   @@map("organizations")
 }
@@ -252,6 +284,7 @@ model Contact {
   enquiries Enquiry[]
   leads     Lead[]
   deals     Deal[]
+  siteVisits SiteVisit[]
 
   // Deterministic duplicate protection: same org + same normalized email + same normalized phone (both non-null) is considered same identity
   @@unique([organizationId, normalizedEmail, normalizedPhone])
@@ -519,6 +552,7 @@ model Project {
   units        Unit[]
   enquiries    Enquiry[]
   leads        Lead[]
+  siteVisits   SiteVisit[]
 
   @@unique([organizationId, name])
   @@index([organizationId])
@@ -543,6 +577,8 @@ model Unit {
   // destroyed — Units are future booking history. Lifecycle is soft-delete.
   project      Project      @relation(fields: [projectId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   deals        Deal[]
+  reservations Reservation[]
+  bookings     Booking[]
 
   @@unique([projectId, identifier])
   @@index([organizationId])
@@ -572,6 +608,7 @@ model User {
   memberships  TeamMembership[]
   refreshTokens RefreshToken[]
   assignedLeads Lead[]          @relation("LeadAssignee")
+  siteVisits    SiteVisit[]     @relation("SiteVisitAgent")
 
   // Tenant-scoped unique: same email can exist in different organizations,
   // but not twice within one organization.
@@ -655,6 +692,9 @@ model Deal {
   // Restrict (not Cascade/SetNull): a Unit referenced by a Deal is future
   // booking history and must never disappear or detach silently.
   unit         Unit?        @relation(fields: [unitId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  siteVisits   SiteVisit[]
+  reservations Reservation[]
+  bookings     Booking[]
 
   @@index([organizationId])
   @@index([organizationId, stage])
@@ -687,4 +727,124 @@ model AuditLog {
   @@index([organizationId])
   @@index([organizationId, entityType, entityId])
   @@map("audit_logs")
+}
+
+// ---------------------------------------------------------------------------
+// TENANT-SCOPED — Site Visit scheduling (Checkpoint 9)
+// A visit occupies two V1 resources: Agent (User) + Property (Project).
+// Per-Unit scheduling does not exist; Unit rows are never read or written by
+// this module. No deletedAt: cancellation (CANCELLED) is the removal path and
+// history must remain queryable; only SCHEDULED/CONFIRMED rows participate in
+// conflict checks. dealId is optional context — scheduling never mutates Deal.
+// ---------------------------------------------------------------------------
+
+model SiteVisit {
+  id                 String          @id @default(uuid())
+  organizationId     String
+  agentId            String
+  projectId          String
+  contactId          String
+  dealId             String?
+  scheduledAt        DateTime
+  durationMinutes    Int             @default(60)
+  status             SiteVisitStatus @default(SCHEDULED)
+  cancelledBy        String?
+  cancellationReason String?
+  cancelledAt        DateTime?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  // Restrict: a scheduled visit is history-in-progress; the agent row must
+  // never disappear under it (users are soft-deleted in practice anyway).
+  agent        User         @relation("SiteVisitAgent", fields: [agentId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  contact      Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  // SetNull: the visit survives deal deletion; the deal never owns the visit.
+  deal         Deal?        @relation(fields: [dealId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+
+  @@index([organizationId])
+  @@index([organizationId, agentId, scheduledAt])
+  @@index([organizationId, projectId, scheduledAt])
+  @@index([organizationId, status])
+  @@index([contactId])
+  @@index([dealId])
+  @@map("site_visits")
+}
+
+// ---------------------------------------------------------------------------
+// TENANT-SCOPED — Reservation & Unit Hold (Checkpoint 10)
+// HOLD reuses this row with type=HOLD (no separate UnitHold table).
+// Unit.availabilityStatus is the authoritative inventory state; this row's
+// status is the record lifecycle. Both mutate in the same transaction while
+// the Unit row is locked FOR UPDATE. No deletedAt: EXPIRED/RELEASED preserve
+// history. dealId is required per Phase 3 (V1 rule — management holds without
+// a Deal are deferred, see DEC-026). CONVERTED is reserved for Checkpoint 11.
+// ---------------------------------------------------------------------------
+
+model Reservation {
+  id             String            @id @default(uuid())
+  organizationId String
+  unitId         String
+  dealId         String
+  type           ReservationType
+  expiresAt      DateTime?
+  status         ReservationStatus @default(ACTIVE)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  // Restrict: a reserved/held Unit is inventory history-in-progress; it must
+  // never disappear under its Reservation.
+  unit         Unit         @relation(fields: [unitId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  // Restrict: a Reservation is sales history; the Deal must never disappear
+  // or detach silently (no SetNull — dealId is required in V1).
+  deal         Deal         @relation(fields: [dealId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  // One Booking per Reservation at the schema level (backstop for the
+  // ACTIVE re-check): a second conversion attempt fails instead of forking.
+  booking      Booking?
+
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@index([unitId])
+  @@index([dealId])
+  @@map("reservations")
+}
+
+// ---------------------------------------------------------------------------
+// TENANT-SCOPED — Booking (Checkpoint 11)
+// Conversion of one ACTIVE type=RESERVATION row: Booking insert +
+// Unit RESERVED → BOOKED + Reservation ACTIVE → CONVERTED, atomically under
+// the Unit FOR UPDATE lock. Lifecycle is the shared cancel triple (no status
+// enum, no deletedAt): a cancelled Booking is preserved history. reservationId
+// is required + unique (explicit chain; Phase 3 omits it but conversion
+// validity cannot be proven from unit+deal history rows alone).
+// No Deal.stage move here — the agent uses the existing stage-transition op.
+// ---------------------------------------------------------------------------
+
+model Booking {
+  id             String    @id @default(uuid())
+  organizationId String
+  unitId         String
+  dealId         String
+  reservationId  String    @unique
+  bookedAt       DateTime  @default(now())
+  cancelledBy    String?
+  cancellationReason String?
+  cancelledAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  // Restrict: a booked Unit is Tier-1 history and must never disappear or
+  // detach silently under its Booking.
+  unit         Unit         @relation(fields: [unitId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  // Restrict: same history argument as Reservation — no SetNull.
+  deal         Deal         @relation(fields: [dealId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  reservation  Reservation  @relation(fields: [reservationId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([organizationId])
+  @@index([unitId])
+  @@index([dealId])
+  @@map("bookings")
 }

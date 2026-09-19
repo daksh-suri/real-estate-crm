@@ -6,25 +6,15 @@
 // config carries type-specific PARAMETERS only, never logic:
 //   ROUND_ROBIN: { teamId } (required) — rotate among ACTIVE team members.
 
+const { resolveRef } = require('../../lib/refs');
+
 async function assertTeam({ tenantPrisma, organizationId, teamId }) {
-  const team = await tenantPrisma.team.findUnique({ where: { id: teamId } });
-  if (!team) {
-    const raw = await tenantPrisma._raw.team.findUnique({ where: { id: teamId } });
-    if (raw && raw.organizationId !== organizationId) {
-      const err = new Error('Cannot use a team from another organization in an assignment rule');
-      err.statusCode = 403;
-      throw err;
-    }
-    if (raw && raw.organizationId === organizationId && raw.deletedAt) {
-      const err = new Error('Cannot use a soft-deleted team in an assignment rule');
-      err.statusCode = 400;
-      throw err;
-    }
-    const err = new Error('Team not found');
-    err.statusCode = 404;
-    throw err;
-  }
-  return team;
+  return resolveRef({
+    tx: tenantPrisma, organizationId, model: 'team', id: teamId,
+    notFound: 'Team not found',
+    crossTenant: 'Cannot use a team from another organization in an assignment rule',
+    softDeleted: 'Cannot use a soft-deleted team in an assignment rule',
+  });
 }
 
 function assertConfigForType(type, config) {

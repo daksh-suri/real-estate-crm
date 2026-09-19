@@ -287,6 +287,83 @@ async function assertRoundRobinIntegrity(organizationId, data, rawPrisma) {
   }
 }
 
+async function assertSiteVisitIntegrity(organizationId, data, rawPrisma) {
+  if (data.agentId) {
+    const agent = await assertSameOrgReference(rawPrisma, 'user', data.agentId, organizationId, 'SiteVisit agentId');
+    if (agent.deletedAt) {
+      throw new CrossTenantError(`SiteVisit cannot be assigned to soft-deleted user ${data.agentId}`);
+    }
+  }
+  if (data.projectId) {
+    const project = await assertSameOrgReference(rawPrisma, 'project', data.projectId, organizationId, 'SiteVisit projectId');
+    if (project.deletedAt) {
+      throw new CrossTenantError(`SiteVisit cannot be attached to soft-deleted project ${data.projectId}`);
+    }
+  }
+  if (data.contactId) {
+    const contact = await assertSameOrgReference(rawPrisma, 'contact', data.contactId, organizationId, 'SiteVisit contactId');
+    if (contact.deletedAt) {
+      throw new CrossTenantError(`SiteVisit cannot be attached to soft-deleted contact ${data.contactId}`);
+    }
+  }
+  if (data.dealId) {
+    const deal = await assertSameOrgReference(rawPrisma, 'deal', data.dealId, organizationId, 'SiteVisit dealId');
+    if (deal.deletedAt) {
+      throw new CrossTenantError(`SiteVisit cannot be attached to soft-deleted deal ${data.dealId}`);
+    }
+    if (data.contactId && deal.contactId !== data.contactId) {
+      throw new CrossTenantError(
+        `SiteVisit deal ${data.dealId} belongs to contact ${deal.contactId}, not ${data.contactId}`
+      );
+    }
+  }
+}
+
+function withSiteVisitExisting(existing, patch) {
+  return {
+    agentId: existing.agentId,
+    projectId: existing.projectId,
+    contactId: existing.contactId,
+    dealId: existing.dealId,
+    ...patch,
+  };
+}
+
+function withReservationExisting(existing, patch) {
+  return {
+    unitId: existing.unitId,
+    dealId: existing.dealId,
+    ...patch,
+  };
+}
+
+async function assertBookingIntegrity(organizationId, data, rawPrisma) {
+  if (data.unitId) {
+    const unit = await assertSameOrgReference(rawPrisma, 'unit', data.unitId, organizationId, 'Booking unitId');
+    if (unit.deletedAt) {
+      throw new CrossTenantError(`Booking cannot be attached to soft-deleted unit ${data.unitId}`);
+    }
+  }
+  if (data.dealId) {
+    const deal = await assertSameOrgReference(rawPrisma, 'deal', data.dealId, organizationId, 'Booking dealId');
+    if (deal.deletedAt) {
+      throw new CrossTenantError(`Booking cannot be attached to soft-deleted deal ${data.dealId}`);
+    }
+  }
+  if (data.reservationId) {
+    await assertSameOrgReference(rawPrisma, 'reservation', data.reservationId, organizationId, 'Booking reservationId');
+  }
+}
+
+function withBookingExisting(existing, patch) {
+  return {
+    unitId: existing.unitId,
+    dealId: existing.dealId,
+    reservationId: existing.reservationId,
+    ...patch,
+  };
+}
+
 async function assertDealIntegrity(organizationId, data, rawPrisma) {
   if (data.contactId) {
     const contact = await assertSameOrgReference(rawPrisma, 'contact', data.contactId, organizationId, 'Deal contactId');
@@ -309,6 +386,21 @@ async function assertDealIntegrity(organizationId, data, rawPrisma) {
     const unit = await assertSameOrgReference(rawPrisma, 'unit', data.unitId, organizationId, 'Deal unitId');
     if (unit.deletedAt) {
       throw new CrossTenantError(`Deal cannot be attached to soft-deleted unit ${data.unitId}`);
+    }
+  }
+}
+
+async function assertReservationIntegrity(organizationId, data, rawPrisma) {
+  if (data.unitId) {
+    const unit = await assertSameOrgReference(rawPrisma, 'unit', data.unitId, organizationId, 'Reservation unitId');
+    if (unit.deletedAt) {
+      throw new CrossTenantError(`Reservation cannot be attached to soft-deleted unit ${data.unitId}`);
+    }
+  }
+  if (data.dealId) {
+    const deal = await assertSameOrgReference(rawPrisma, 'deal', data.dealId, organizationId, 'Reservation dealId');
+    if (deal.deletedAt) {
+      throw new CrossTenantError(`Reservation cannot be attached to soft-deleted deal ${data.dealId}`);
     }
   }
 }
@@ -446,6 +538,15 @@ function wrapModel(modelName, rawModel, organizationId, guardClient) {
       if (modelName === 'deal') {
         await assertDealIntegrity(organizationId, data, guards);
       }
+      if (modelName === 'siteVisit') {
+        await assertSiteVisitIntegrity(organizationId, data, guards);
+      }
+      if (modelName === 'reservation') {
+        await assertReservationIntegrity(organizationId, data, guards);
+      }
+      if (modelName === 'booking') {
+        await assertBookingIntegrity(organizationId, data, guards);
+      }
 
       return rawModel.create({ ...args, data });
     },
@@ -527,6 +628,15 @@ function wrapModel(modelName, rawModel, organizationId, guardClient) {
           guards
         );
       }
+      if (modelName === 'siteVisit' && args.data) {
+        await assertSiteVisitIntegrity(organizationId, withSiteVisitExisting(existing, args.data), guards);
+      }
+      if (modelName === 'reservation' && args.data) {
+        await assertReservationIntegrity(organizationId, withReservationExisting(existing, args.data), guards);
+      }
+      if (modelName === 'booking' && args.data) {
+        await assertBookingIntegrity(organizationId, withBookingExisting(existing, args.data), guards);
+      }
 
       // Perform update using the record's PK (id) which is globally unique and valid.
       // This avoids generating an invalid where: { id, organizationId } for Prisma update.
@@ -602,6 +712,15 @@ function wrapModel(modelName, rawModel, organizationId, guardClient) {
             guards
           );
         }
+        if (modelName === 'siteVisit' && args.update) {
+          await assertSiteVisitIntegrity(organizationId, withSiteVisitExisting(existing, args.update), guards);
+        }
+        if (modelName === 'reservation' && args.update) {
+          await assertReservationIntegrity(organizationId, withReservationExisting(existing, args.update), guards);
+        }
+        if (modelName === 'booking' && args.update) {
+          await assertBookingIntegrity(organizationId, withBookingExisting(existing, args.update), guards);
+        }
         const whereForUpdate = { id: existing.id };
         return rawModel.update({ where: whereForUpdate, data: args.update });
       }
@@ -638,6 +757,15 @@ function wrapModel(modelName, rawModel, organizationId, guardClient) {
       }
       if (modelName === 'deal') {
         await assertDealIntegrity(organizationId, create, guards);
+      }
+      if (modelName === 'siteVisit') {
+        await assertSiteVisitIntegrity(organizationId, create, guards);
+      }
+      if (modelName === 'reservation') {
+        await assertReservationIntegrity(organizationId, create, guards);
+      }
+      if (modelName === 'booking') {
+        await assertBookingIntegrity(organizationId, create, guards);
       }
       return rawModel.create({ data: create });
     },
@@ -699,6 +827,9 @@ function createTenantPrisma(organizationId) {
     idempotencyKey: wrapModel('idempotencyKey', prisma.idempotencyKey, organizationId),
     deal: wrapModel('deal', prisma.deal, organizationId),
     auditLog: wrapModel('auditLog', prisma.auditLog, organizationId),
+    siteVisit: wrapModel('siteVisit', prisma.siteVisit, organizationId),
+    reservation: wrapModel('reservation', prisma.reservation, organizationId),
+    booking: wrapModel('booking', prisma.booking, organizationId),
 
     // Preserve raw access for advanced needs, but clearly marked as unscoped
     _raw: prisma,
@@ -744,6 +875,9 @@ function createTenantPrisma(organizationId) {
             idempotencyKey: txWrap('idempotencyKey', rawTx.idempotencyKey),
             deal: txWrap('deal', rawTx.deal),
             auditLog: txWrap('auditLog', rawTx.auditLog),
+            siteVisit: txWrap('siteVisit', rawTx.siteVisit),
+            reservation: txWrap('reservation', rawTx.reservation),
+            booking: txWrap('booking', rawTx.booking),
             _raw: rawTx,
             _organizationId: organizationId,
           };
@@ -764,7 +898,5 @@ module.exports = {
   TenantContextError,
   CrossTenantError,
   createTenantPrisma,
-  flattenWhere,
-  injectWhere,
 };
 

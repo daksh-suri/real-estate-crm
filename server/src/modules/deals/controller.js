@@ -8,14 +8,6 @@ const {
 } = require('./validation');
 const service = require('./service');
 
-function orgId(req) {
-  return req.auth.organizationId;
-}
-
-function actorId(req) {
-  return req.auth.userId;
-}
-
 // Relationship fields are immutable after creation: contactId/leadId come
 // from the source Lead, stage/lostReason move via the transition endpoint,
 // organizationId is never client-controlled. Reject them against the raw body
@@ -28,8 +20,8 @@ async function create(req, res, next) {
     const data = validate(createDealSchema, req.body);
     const deal = await service.createDeal({
       tenantPrisma: req.tenantPrisma,
-      organizationId: orgId(req),
-      actorId: actorId(req),
+      organizationId: req.auth.organizationId,
+      actorId: req.auth.userId,
       leadId: data.leadId,
       unitId: data.unitId,
     });
@@ -86,7 +78,7 @@ async function update(req, res, next) {
     const data = validate(updateDealSchema, req.body);
     const updated = await service.updateDeal({
       tenantPrisma: req.tenantPrisma,
-      organizationId: orgId(req),
+      organizationId: req.auth.organizationId,
       dealId,
       data,
     });
@@ -112,8 +104,8 @@ async function transition(req, res, next) {
     const data = validate(transitionSchema, req.body);
     const updated = await service.transitionDeal({
       tenantPrisma: req.tenantPrisma,
-      organizationId: orgId(req),
-      actorId: actorId(req),
+      organizationId: req.auth.organizationId,
+      actorId: req.auth.userId,
       dealId,
       stage: data.stage,
       lostReason: data.lostReason,

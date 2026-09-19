@@ -16,7 +16,6 @@ function requireInProduction(name, value) {
 }
 
 const accessSecret = process.env.JWT_ACCESS_SECRET || (isProduction ? null : 'dev-access-secret-change-in-production-32chars+');
-const refreshSecret = process.env.JWT_REFRESH_SECRET || process.env.JWT_ACCESS_SECRET || (isProduction ? null : 'dev-refresh-secret-change-in-production-32chars+');
 
 if (isProduction) {
   requireInProduction('JWT_ACCESS_SECRET', accessSecret);
@@ -26,18 +25,13 @@ const config = {
   env: process.env.NODE_ENV || 'development',
   port: parseInt(process.env.PORT || '5000', 10),
   corsOrigin: process.env.CORS_ORIGIN || 'http://localhost:5173',
-  databaseUrl: process.env.DATABASE_URL || '',
   isProduction,
   isTest,
 
   // JWT — access token (short-lived)
   jwt: {
     accessSecret,
-    // Separate secret for refresh JWT not used; refresh tokens are opaque SHA256 hashed.
-    // Keep for potential future JWT refresh if needed.
-    refreshSecret,
     accessExpiresIn: process.env.JWT_ACCESS_EXPIRES_IN || '15m', // 15 minutes
-    refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d', // 7 days (for refresh_tokens.expiresAt)
     refreshExpiresMs: parseDuration(process.env.JWT_REFRESH_EXPIRES_IN || '7d'),
     issuer: process.env.JWT_ISSUER || 'real-estate-crm',
     audience: process.env.JWT_AUDIENCE || 'real-estate-crm-client',
@@ -59,7 +53,6 @@ const config = {
       path: '/',
       // maxAge set per refresh token expiry; we set dynamically
     },
-    csrfHeader: 'x-csrf-token',
   },
 
   // Rate limiting (in-memory)

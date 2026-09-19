@@ -1,4 +1,5 @@
 const { z } = require('zod');
+const { validate } = require('../../lib/validate');
 
 // Fixed V1 pipeline (Phase 3 #7): nine forward stages plus CLOSED_LOST as a
 // parallel terminal outcome. Mirrors the DealStage Prisma enum exactly.
@@ -52,16 +53,6 @@ const listQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).optional(),
 });
 
-function validate(schema, data) {
-  const result = schema.safeParse(data);
-  if (!result.success) {
-    const err = new Error('Validation failed');
-    err.statusCode = 400;
-    err.details = result.error.flatten();
-    throw err;
-  }
-  return result.data;
-}
 
 module.exports = {
   dealStages,

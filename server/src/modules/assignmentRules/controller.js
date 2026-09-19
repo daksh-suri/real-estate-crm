@@ -7,16 +7,12 @@ const {
 } = require('./validation');
 const service = require('./service');
 
-function orgId(req) {
-  return req.auth.organizationId;
-}
-
 async function create(req, res, next) {
   try {
     const data = validate(createAssignmentRuleSchema, req.body);
     const row = await service.createAssignmentRule({
       tenantPrisma: req.tenantPrisma,
-      organizationId: orgId(req),
+      organizationId: req.auth.organizationId,
       data,
     });
     return res.status(201).json(row);
@@ -55,7 +51,7 @@ async function update(req, res, next) {
     const data = validate(updateAssignmentRuleSchema, req.body);
     const updated = await service.updateAssignmentRule({
       tenantPrisma: req.tenantPrisma,
-      organizationId: orgId(req),
+      organizationId: req.auth.organizationId,
       assignmentRuleId,
       data,
     });

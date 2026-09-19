@@ -1,4 +1,5 @@
 const { z } = require('zod');
+const { validate } = require('../../lib/validate');
 
 const createTeamSchema = z.object({
   name: z.string().trim().min(2, 'Team name must be at least 2 characters').max(100),
@@ -20,16 +21,6 @@ const userIdParamSchema = z.object({
   userId: z.string().uuid(),
 });
 
-function validate(schema, data) {
-  const result = schema.safeParse(data);
-  if (!result.success) {
-    const err = new Error('Validation failed');
-    err.statusCode = 400;
-    err.details = result.error.flatten();
-    throw err;
-  }
-  return result.data;
-}
 
 module.exports = {
   createTeamSchema,

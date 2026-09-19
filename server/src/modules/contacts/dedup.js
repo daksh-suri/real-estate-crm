@@ -1,5 +1,3 @@
-const { normalizeEmail, normalizePhone } = require('./normalization');
-
 // Tiered matching
 // Strong/clear match: both normalizedEmail and normalizedPhone present and both match existing
 // Possible/ambiguous: either email OR phone matches (single signal) — different person possible (family shared number)
@@ -39,21 +37,8 @@ async function findPossibleMatches({ tenantPrisma, normalizedEmail, normalizedPh
   return matches;
 }
 
-function classifyMatches({ strongMatch, possibleMatches }) {
-  if (strongMatch) {
-    return { type: 'STRONG', existing: strongMatch, possible: [] };
-  }
-  if (possibleMatches.length > 0) {
-    return { type: 'POSSIBLE', existing: null, possible: possibleMatches };
-  }
-  return { type: 'NONE', existing: null, possible: [] };
-}
-
 module.exports = {
   buildMatchSignals,
   findStrongMatch,
   findPossibleMatches,
-  classifyMatches,
-  normalizeEmail,
-  normalizePhone,
 };

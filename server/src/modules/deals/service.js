@@ -1,20 +1,7 @@
-const { dealStages } = require('./validation');
-
 // Fixed V1 pipeline (Phase 3 #7). Forward chain plus CLOSED_LOST as a
 // parallel terminal outcome reachable from any active stage. Terminal stages
 // have no exits. Listed literally (not generated) so the map itself is the
 // auditable specification.
-const ACTIVE_STAGES = [
-  'NEW',
-  'QUALIFIED',
-  'SITE_VISIT_SCHEDULED',
-  'NEGOTIATION',
-  'RESERVATION',
-  'BOOKING_CONFIRMED',
-  'AGREEMENT_SIGNED',
-  'PAYMENT_IN_PROGRESS',
-];
-
 const ALLOWED_TRANSITIONS = {
   NEW: ['QUALIFIED', 'CLOSED_LOST'],
   QUALIFIED: ['SITE_VISIT_SCHEDULED', 'NEGOTIATION', 'CLOSED_LOST'],
@@ -32,11 +19,7 @@ const AUDIT_ENTITY_DEAL = 'Deal';
 const AUDIT_ACTION_CREATE = 'deal.create';
 const AUDIT_ACTION_TRANSITION = 'deal.stage_transition';
 
-function notFoundError(message) {
-  const err = new Error(message);
-  err.statusCode = 404;
-  return err;
-}
+const { notFoundError } = require('../../lib/httpError');
 
 async function getDeal({ tenantPrisma, dealId }) {
   const deal = await tenantPrisma.deal.findUnique({ where: { id: dealId } });
@@ -240,12 +223,6 @@ async function deleteDeal({ tenantPrisma, dealId }) {
 }
 
 module.exports = {
-  dealStages,
-  ACTIVE_STAGES,
-  ALLOWED_TRANSITIONS,
-  AUDIT_ENTITY_DEAL,
-  AUDIT_ACTION_CREATE,
-  AUDIT_ACTION_TRANSITION,
   getDeal,
   listDeals,
   createDeal,

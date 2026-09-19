@@ -1,23 +1,12 @@
 const { validate, intakeSchema, enquiryIdParamSchema, listQuerySchema } = require('./validation');
 const service = require('./service');
-const { IdempotentReplay } = require('../../lib/idempotency');
-
-function idempotencyKeyFrom(req) {
-  const raw = req.headers['idempotency-key'];
-  if (raw === undefined || raw === null) return null;
-  const key = String(raw).trim();
-  return key || null;
-}
+const { IdempotentReplay, idempotencyKeyFrom, assertIdempotencyKey } = require('../../lib/idempotency');
 
 async function intake(req, res, next) {
   try {
     const input = validate(intakeSchema, req.body);
     const key = idempotencyKeyFrom(req);
-    if (key !== null && (key.length < 1 || key.length > 100)) {
-      const err = new Error('Idempotency-Key must be 1-100 characters');
-      err.statusCode = 400;
-      throw err;
-    }
+    assertIdempotencyKey(key);
     const result = await service.intakeEnquiry({
       tenantPrisma: req.tenantPrisma,
       organizationId: req.auth.organizationId,

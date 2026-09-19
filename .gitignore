@@ -43,3 +43,9 @@ coverage/
 # Cache
 .eslintcache
 .cache/
+
+# Local AI-agent / tooling artifacts (untracked working files, never commit)
+AGENTS.md
+agent.md
+.opencode/
+graphify-out/

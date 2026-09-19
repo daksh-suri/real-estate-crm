@@ -67,10 +67,9 @@ Organization / Tenant (tenant root, global table)
     +-- IdempotencyKey (intake/webhook replay protection)
     |
     +-- Properties
-    |      +-- Projects ── Units (availability owned by future flows)
+    |      +-- Projects ── Units (availability owned by Reservation/Hold/Booking flows, never direct edits)
     |
-    +-- Sales [SPECIFIED, not implemented: Deal, SiteVisit, Reservation,
-    |          Booking, PaymentPlan/Obligation/Record]
+    +-- Sales [IMPLEMENTED: Deal, SiteVisit, Reservation/Hold, Booking; SPECIFIED: PaymentPlan/Obligation/Record]
     +-- Activity / Task [SPECIFIED, not implemented]
     +-- Document [SPECIFIED, not implemented]
     +-- Communication automation, dashboards, reports [DEFERRED / future]
@@ -156,6 +155,9 @@ Established rejections (Phase 2 Part G + scope corrections) — do not build: ge
 | Enquiry | One **intake event** — what came in | A sales record; channel-specific fields live in `rawPayload`, never on Lead | Append-only; `contactId` null until matched; `linkedLeadId` set after Lead resolution |
 | Lead | Working **sales opportunity/relationship** from intake | The intake history (that's Enquiry) | Created only by intake; one OPEN per org+contact+project (partial index); project-less leads are exempt by design; auto-flips to CONVERTED when a Deal is created from it (DEC-024) |
 | Deal | Converted Lead's **pipeline record** — stage + lost reason | Reservation/booking/payment/site-visit state (future modules reference Deal, never the reverse) | Created only from an OPEN Lead at `NEW`; fixed 10-value `DealStage` enum, map-validated transitions, dedicated endpoint; `unitId` nullable until reservation, attach-once; soft-deleted like Leads |
+| SiteVisit | One **planned customer property visit** — agent + project + slot | A calendar system, a Unit hold, a Deal stage driver | `SCHEDULED` start, 60-min default, 15-min agent-only buffer; optional dealId (contact-consistent); no `deletedAt`; transitions via dedicated ops; reschedule re-locks + re-checks |
+| Reservation | One **unit claim or hold** — deal + unit + type | Booking/payment detail (references it, never the reverse) | `type` RESERVATION/HOLD on one row (no UnitHold table); `dealId` required in V1; `status` ACTIVE→EXPIRED/RELEASED/CONVERTED (CONVERTED only via Booking); `expiresAt` nullable (no-expiry hold); no `deletedAt`; Unit + row mutate in one tx under Unit `FOR UPDATE`; dedicated create/release/expiry ops |
+| Booking | Finalized **unit sale record** — deal + unit + reservation | Payment detail (references it, never the reverse) | `reservationId` required + unique (one booking per reservation); `bookedAt` server-set; lifecycle is the cancel triple (no status enum, no `deletedAt`); create converts ACTIVE RESERVATION→CONVERTED + Unit RESERVED→BOOKED in one tx; cancel preserves row, frees Unit→AVAILABLE, keeps CONVERTED; no `Deal.stage` move (agent drives transition explicitly) |
 | AuditLog | Shared **append-only history row** (first writer: Deal) | A per-entity history table — `Deal.stageHistory` derives from these rows | `actorId` has no FK (history survives actor deletion); `deal.create` + `deal.stage_transition` entries written in the same transaction as the state change |
 | LeadSource / Campaign | Intake attribution config (portal names, campaigns) | Analytics engine | Per-org unique names; campaign→source must be same-org |
 | AssignmentRule | `type + order + config + active` | A script/expression (config holds params only, never logic) | V1: `ROUND_ROBIN` only; config `{ teamId }` must be a visible same-org team |
@@ -167,7 +169,7 @@ Protected distinctions — do not collapse: **Activity = what happened. Task = w
 
 ### Specified but NOT implemented
 
-SiteVisit, Reservation/Hold, Booking, PaymentPlan/Obligation/Record, Document, Activity, Task, OutboxEvent, IntegrationConfig. Phase 3 Part B/C defines their shape; no tables, routes, or logic exist yet. (Deal + AuditLog moved to IMPLEMENTED in Checkpoint 8.)
+PaymentPlan/Obligation/Record, Document, Activity, Task, OutboxEvent, IntegrationConfig. Phase 3 Part B/C defines their shape; no tables, routes, or logic exist yet. (Deal + AuditLog moved to IMPLEMENTED in Checkpoint 8; SiteVisit in Checkpoint 9; Reservation/Hold in Checkpoint 10; Booking in Checkpoint 11.)
 
 ## 8. Critical Architecture & Business Decisions
 
@@ -326,6 +328,30 @@ SiteVisit, Reservation/Hold, Booking, PaymentPlan/Obligation/Record, Document, A
 **Rules:** A second Deal from the same Lead is therefore impossible without inventing a rule: the Lead is no longer OPEN. Converted-then-lost Deals do not reopen their Lead (no reopening path exists; would need an explicit future decision).
 **Why:** Gives `CONVERTED` its only current meaning and makes duplicate-deal prevention fall out of the existing Lead lifecycle instead of a new constraint.
 
+### DEC-025 — Site Visit Agent + Project resource model
+**Status:** IMPLEMENTED
+**Problem / Context:** Scheduling needs a concrete conflict model without becoming a calendar engine (Phase 2 #14, Phase 3 C.1/E).
+**Decision:** A visit occupies exactly two V1 resources — Agent (`User`) + Property (`Project`); per-Unit scheduling does not exist and `Unit` rows are never read or written. Duration default 60 min with per-visit 15–480 override (no org-config table exists; none built); agent buffer fixed 15 min, agent-only. Only `SCHEDULED`/`CONFIRMED` rows block; history never does. Scheduling is `validate → lock agent row → lock project row (deterministic agent→project order, no deadlock cycles) → re-check conflicts → insert → commit`, with `IdempotencyKey(operationType: SITE_VISIT_CREATE)` replay/conflict semantics reused verbatim. No `audit_logs` rows: Phase 3 mandates them only for Deal create/transitions, and visit history lives on the row (`status` + cancellation triple). No Deal stage side effects, no generic PATCH, no `deletedAt` (cancellation is the removal path).
+**Rules:** Contact overlap is a preference, never a constraint. `POST /site-visits/:id/reschedule` (from `SCHEDULED`/`CONFIRMED` only, same row updated in place, locks + re-check re-run) is the sole slot mutator. Permissions: `siteVisit:create|read|update|transition`, no `delete`.
+**Why:** Row locks on the two real resources close the check-then-insert race with the narrowest possible critical section; everything else is display or future scope.
+**Important Edge Cases:** Concurrent same-key retries converge via the idempotency record even when the loser fails first on slot conflict (post-hoc replay resolution). Deactivated agents reject 400; cross-tenant refs hide 404 on reads, fail 403 on writes.
+
+### DEC-026 — Reservation & Unit Hold on one row, Unit lock owns inventory
+**Status:** IMPLEMENTED
+**Problem / Context:** Unit claims need a concrete concurrency authority without a second availability truth or a generalized hold engine (Phase 3 C.1/E/G, Phase 9).
+**Decision:** One `Reservation` row with `type` RESERVATION/HOLD (no UnitHold table). `Unit.availabilityStatus` is the authoritative inventory state; `Reservation.status` is the record lifecycle; both mutate in the same transaction under `SELECT … FOR UPDATE` on the Unit row with an in-lock AVAILABLE re-check. RESERVATION: AVAILABLE→RESERVED; HOLD: AVAILABLE→ON_HOLD (nullable `expiresAt` = management hold with no expiry); release/expiry: →AVAILABLE. `dealId` required in V1 per Phase 3 (management holds without a Deal deferred — no nullable invented). A unit-less Deal is bound to the Unit in the same transaction (attach-once preserved; bound-to-other-Unit rejects 400). `RESERVATION_CREATE`/`HOLD_CREATE` idempotency namespaces reuse the shared table verbatim. `expireDueReservations` named worker: per-candidate tx (lock Unit → re-read ACTIVE + past-due → EXPIRED + conditional AVAILABLE), re-run safe, never releases a reused Unit. No `audit_logs` rows (Phase 3 mandates them only for Deal create/transitions + merge/document/RERA), no outbox (jobs checkpoint owns dispatch), no `deletedAt` (EXPIRED/RELEASED preserve history), no generic PATCH, no CONVERTED/BOOKED (Checkpoint 11).
+**Rules:** Permissions: `reservation:create|read|release` (no `delete`, no separate hold perms). `POST /reservations` (explicit `type` field, no `/holds`) is the sole create path; `POST /reservations/:id/release` the sole lifecycle mutator. Terminals never reopen; release/expiry verify the Unit still holds the expected state, never blind-set AVAILABLE.
+**Why:** The Unit row lock closes the double-claim race with the narrowest critical section; the type discriminator keeps one lifecycle instead of two tables drifting apart.
+**Important Edge Cases:** BLOCKED/BOOKED/RESERVED/ON_HOLD all reject 409 with the Unit untouched. Stale expiry after reuse is a no-op (loser observes terminal state). Same-key different-type payloads collide per-namespace (409 either way); same-key retries converge post-hoc like SiteVisit.
+
+### DEC-027 — Booking converts one ACTIVE reservation; no stage move, no HOLD path
+**Status:** IMPLEMENTED
+**Problem / Context:** Finalizing a sale must bind Booking + Unit + Reservation atomically without forking conversion history or inventing a Booking state machine (Phase 3 C.1/E/G, Phase 9).
+**Decision:** `Booking(unitId, dealId, reservationId! @unique, bookedAt server-set, cancel triple)` — no status enum, no `deletedAt`. Create converts in one tx under the Unit `FOR UPDATE` lock (Checkpoint 10 pattern): ACTIVE type=RESERVATION only (HOLD rejects 400) → Booking insert → Unit RESERVED→BOOKED → Reservation ACTIVE→CONVERTED → `BOOKING_CREATE` idempotency record. `reservationId @unique` backstops the ACTIVE re-check against double conversion. No `Deal.stage` move (Phase 3 booking effects list none; agent drives RESERVATION→BOOKING_CONFIRMED via the existing transition op). No `audit_logs` rows (Phase 3 booking row mandates none — same precedent as Checkpoints 9/10). Cancel (`POST /bookings/:id/cancel`, `booking:cancel` perm): trimmed reason required, `cancelledBy` = actor, `cancelledAt` = now; row preserved; Unit BOOKED→AVAILABLE only if still BOOKED; Reservation stays CONVERTED (history never reopened); double-cancel 400.
+**Rules:** Permissions: `booking:create|read|cancel` (no `delete`, no PATCH/PUT/DELETE routes). `POST /bookings` (`{reservationId}` + optional matching `unitId/dealId` cross-checks, authority derived from the Reservation row) is the sole create path. AVAILABLE/ON_HOLD/BLOCKED/BOOKED units reject 409 with nothing converted.
+**Why:** The unique conversion edge plus the Unit lock makes double-booking structurally impossible instead of convention-blocked; the missing stage move keeps one Deal mutation path.
+**Important Edge Cases:** Concurrent bookings on one reservation → one 201, loser 409 (or 200 replay same-key). Cancel-after-reuse frees only a still-BOOKED unit and never touches CONVERTED. Same-key different-reservation → 409.
+
 ## 9. Assignment Architecture
 
 ```
@@ -392,6 +418,12 @@ Unique `(org, key, operationType)` elects exactly one committed winner. The lose
 ### Transaction-context tenant guards
 Guards bound to `rawTx` see uncommitted rows; guards bound to the global client do not and will falsely reject legitimate in-transaction writes. Any new tenant-scoped write path inside a transaction must use the tx-bound wrapper.
 
+### Site-visit slot lock order
+Schedule and reschedule both lock the agent `users` row first, then the project `projects` row, then (reschedule only) the visit row. Same global order from every entry point means concurrent schedulings can wait on each other but never deadlock in a cycle. Do not add a third lockable resource or reorder without re-proving acyclicity.
+
+### Reservation unit lock order
+Create, release, and each expiry candidate lock exactly one row — the target `units` row `FOR UPDATE` — then re-read reservation state while holding it. Booking create/cancel reuse the same single-lock shape (lock Unit → re-read Reservation/Booking under lock). Single-lock transactions cannot deadlock in a cycle; the lock + re-check is the enforcement, the pre-lock read is only a fast-path courtesy. Never mutate `availabilityStatus`, `Reservation.status`, or Booking rows outside this lock; never blind-set AVAILABLE without verifying the expected holder state.
+
 Each pattern exists because application-only checks (`if (!x) create x`) fail under interleaving — the lock/constraint is the enforcement, the code check is the courtesy fast path.
 
 ## 12. API / Backend Conventions
@@ -401,14 +433,14 @@ Each pattern exists because application-only checks (`if (!x) create x`) fail un
 - **Error semantics:** 401 unauthenticated/expired/deactivated; 403 guard violation or confirmed cross-tenant write; 404 unknown id OR cross-tenant/deleted read (hide existence); 400 validation, bad transition, soft-deleted write, direct-mutation attempts; 409 uniqueness/idempotency-hash conflicts. Envelope: `{ error: { message, status } }` (+ stack off-prod).
 - **Validation:** zod at the boundary before any service logic; coerce query numerics; unknown-keys policy: immutable/system fields checked against the raw body for precise 400s (see unit/projectId, lead/assignedAgentId pattern).
 - **Pagination/filtering:** `limit` (default 20, cap 100) + `offset` + whitelisted exact-match filters and `contains+insensitive` search. Cursor pagination is Phase 2 guidance for large lists — NOT yet adopted; prefer it for new high-volume list endpoints.
-- **Direct mutation restrictions (do not bypass):** no `POST /leads`; no `availabilityStatus` or `Unit.projectId` writes; no assignment via `PATCH /leads`; no auto-merge of duplicates.
-- **Endpoint naming:** plural kebab resources (`/enquiries`, `/leads`, `/lead-sources`, `/campaigns`, `/assignment-rules`, `/projects`, `/units`, `/contacts`, `/requirements`, `/teams`, `/organizations`); actions as subpaths (`/:id/reassign`, `/:id/merge`, `/:projectId/units`).
+- **Direct mutation restrictions (do not bypass):** no `POST /leads`; no `availabilityStatus` or `Unit.projectId` writes; no assignment via `PATCH /leads`; no auto-merge of duplicates; no generic `PATCH /site-visits` (status/slot move only via dedicated ops); no generic `PATCH /reservations` (status/type/unitId/dealId immutable — ACTIVE moves only via release/expiry/Booking); no `PATCH/PUT/DELETE /bookings` (finalized rows mutate only via dedicated cancel).
+- **Endpoint naming:** plural kebab resources (`/enquiries`, `/leads`, `/lead-sources`, `/campaigns`, `/assignment-rules`, `/projects`, `/units`, `/contacts`, `/requirements`, `/teams`, `/organizations`, `/deals`, `/site-visits`, `/reservations`, `/bookings`); actions as subpaths (`/:id/reassign`, `/:id/merge`, `/:projectId/units`, `/:id/stage-transition`, `/:id/confirm|cancel|complete|no-show|reschedule`, `/:id/release`, `/:id/cancel`).
 
 ## 13. Testing Philosophy
 
 Strong tests are required for: tenant isolation, authorization matrix, transactions, concurrent requests, idempotency (replay + conflict + races), state transitions (valid and invalid), uniqueness (including reopen conflicts), soft-delete read/write behavior, cross-organization attacks, external failure boundaries (malformed payloads preserved, not dropped), assignment (order, concurrency, deactivation, manual-wins), contact matching tiers, repeat-enquiry attach-vs-create.
 
-Snapshot (not a requirement): **277 tests / 9 suites** — auth 61, tenantIsolation 50, contactsRequirements 47, enquiryLead 33, organizationsTeams 33, propertyHierarchy 28, dealsPipeline 20, refreshConcurrency 3, health 2. Concurrency-sensitive tests are re-run multiple times before sign-off. Never weaken an existing test to make a new feature pass.
+Snapshot (not a requirement): **359 tests / 12 suites** — auth 61, tenantIsolation 50, contactsRequirements 47, enquiryLead 33, organizationsTeams 33, reservations 32, siteVisits 29, propertyHierarchy 28, bookings 21, dealsPipeline 20, refreshConcurrency 3, health 2. Concurrency-sensitive tests are re-run multiple times before sign-off. Never weaken an existing test to make a new feature pass.
 
 ## 14. Implementation Status
 
@@ -420,14 +452,23 @@ Snapshot (not a requirement): **277 tests / 9 suites** — auth 61, tenantIsolat
 | 4 | Organizations + Teams | COMPLETE | Tenant-safe CRUD, soft-delete, M:M membership |
 | 5 | Contact + Requirement | COMPLETE | Tiered dedup, PossibleDuplicate queue, manual merge |
 | 6 | Property hierarchy | COMPLETE | Project/Unit, Restrict FK, immutable project link |
-| 7 | Enquiry + Lead foundation | COMPLETE | See below; implemented + validated, uncommitted on `dev` at time of writing |
-| 8 | Deal + pipeline | COMPLETE | Fixed 10-value enum, map-validated transitions, shared audit_logs, auto-convert; 20 integration tests; uncommitted on `dev` at time of writing |
-| 9–13 | Site visit, Reservation/Booking, Payments, Documents | NOT STARTED | Concurrency-heavy; build on stable Lead/Unit/Deal |
+| 7 | Enquiry + Lead foundation | COMPLETE | See below; implemented + validated |
+| 8 | Deal + pipeline | COMPLETE | Fixed 10-value enum, map-validated transitions, shared audit_logs, auto-convert; 20 integration tests |
+| 9 | Site visit | COMPLETE | Agent + Project resources, 60/15 defaults, lock + re-check, idempotent schedule, dedicated lifecycle/reschedule ops; 29 integration tests |
+| 10 | Reservation & Unit Hold | COMPLETE | One-row RESERVATION/HOLD discriminator, dealId required (V1), Unit FOR UPDATE + re-check, idempotent create, dedicated release, named expiry worker; 32 integration tests |
+| 11 | Booking | COMPLETE | ACTIVE RESERVATION→CONVERTED + Unit RESERVED→BOOKED in one tx, reservationId required + unique, idempotent create, dedicated cancel; 21 integration tests; uncommitted on `dev` at time of writing |
+| 12–13 | Payments, Documents | NOT STARTED | PaymentPlan/Obligation/Record build on stable Booking |
 | 14+ | Activity/Task, jobs/outbox, audit pass, frontend, dashboards, observability | NOT STARTED | Phase 3 Part N order |
 
 Checkpoint 7 verified status: intake pipeline; Checkpoint-5 matching reuse (no second implementation); Lead foundation (no manual create); ROUND_ROBIN (+deterministic, concurrent-safe) and manual reassignment; IdempotencyKey table + replay/conflict/race semantics; partial-index + row-lock concurrency protection; 33 integration tests; project-less enquiries open separate Leads; Activity integration deferred (no Activity table yet); PROJECT_AFFINITY/TERRITORY/MANUAL_OVERRIDE_CHECK deferred.
 
 Checkpoint 8 verified status: Deal creation from OPEN Lead only (contact derived, never client-supplied; unitId optional, availability untouched); Lead auto-converts in the same transaction (resolves O-1); fixed pipeline with literal transition map + dedicated endpoint + `fromStage` concurrency check; CLOSED_LOST requires trimmed reason, terminals have no exits, forward moves clear the reason; `deal.create` + `deal.stage_transition` audit rows in-transaction (no `lead.converted` entry — Phase 3 does not require it); PATCH limited to unit attach-once; soft-delete consistent with Leads; 20 integration tests; no SiteVisit/Reservation/Booking/Payment/Document/Activity/RERA leakage.
+
+Checkpoint 9 verified status: Agent + Project resource model (no per-Unit scheduling, Unit rows untouched); 60-min default with 15–480 per-visit override, 15-min agent-only buffer; SCHEDULED/CONFIRMED block, histories never do; contact overlap is preference-only; deterministic agent→project `FOR UPDATE` lock order + in-lock re-check; `SITE_VISIT_CREATE` idempotency incl. post-hoc replay on slot-conflict races; lifecycle map + cancel triple + in-place reschedule via dedicated ops (no generic PATCH, no `deletedAt`, no audit rows per spec); 29 integration tests incl. 3 real concurrent double-book races; no Reservation/Booking/Payment/Document/Activity/Task/Notification/RERA leakage.
+
+Checkpoint 10 verified status: One-row RESERVATION/HOLD discriminator (no UnitHold table); `dealId` required in V1 per Phase 3 (management Deal-less holds deferred, see DEC-026); AVAILABLE→RESERVED / AVAILABLE→ON_HOLD creation with Unit `FOR UPDATE` + in-lock re-check; unit-less Deal bound in-transaction (attach-once preserved); `RESERVATION_CREATE`/`HOLD_CREATE` idempotency incl. post-hoc replay; ACTIVE→RELEASED dedicated release + ACTIVE→EXPIRED named worker (`expireDueReservations`, per-candidate tx, conditional AVAILABLE, re-run/stale safe); no generic PATCH, no `deletedAt`, no audit/outbox rows per spec; 32 integration tests incl. 4 real concurrent claim races + release/expiry race; no Payment/Document/Activity/Task/Notification/RERA leakage.
+
+Checkpoint 11 verified status: `Booking(unitId, dealId, reservationId! @unique, bookedAt server-set, cancel triple)` — no status enum, no `deletedAt`; create converts ACTIVE type=RESERVATION only (HOLD rejects 400) via Unit `FOR UPDATE` + in-lock re-check (Booking insert + RESERVED→BOOKED + ACTIVE→CONVERTED + `BOOKING_CREATE` idempotency in one tx); no `Deal.stage` move (agent uses existing transition op); no audit/outbox rows per spec; cancel preserves row (actor + trimmed reason + timestamp), frees BOOKED→AVAILABLE, keeps CONVERTED, double-cancel 400; no PATCH/PUT/DELETE; 21 integration tests incl. 3 concurrent booking races; no Payment/Document/Activity/Task/Notification/RERA leakage.
 
 ## 15. Deferred vs Out of Scope
 
@@ -480,4 +521,4 @@ Checkpoint 8 verified status: Deal creation from OPEN Lead only (contact derived
 **Stack:** JavaScript + React + Node/Express + PostgreSQL + Prisma.
 **Architecture:** Modular monolith + organization-based multi-tenancy.
 **Core principles:** Postgres is the source of truth. Tenancy is mandatory and fail-closed. Permissions/scopes, never role-name checks. Transactions guard multi-record flows. Constraints + row locks guard concurrency. Idempotency lives in a tenant-safe table. Activity = happened; Task = to-do; Enquiry = intake event; Lead = opportunity. Project repeats may reuse an OPEN Lead; project-less enquiries never auto-reuse. No bypassing auth/tenancy/transactions/idempotency. No speculative infra. No deferred features without a decision.
-**Current checkpoint:** 8 (Deal & pipeline) implemented and validated; Site Visit scheduling next.
+**Current checkpoint:** 11 (Booking) implemented and validated; Payment (Plan/Obligation/Record on stable Booking) next.

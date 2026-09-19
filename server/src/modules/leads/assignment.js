@@ -72,4 +72,4 @@ async function pickRoundRobin({ tx, organizationId, teamId }) {
   return picked.id;
 }
 
-module.exports = { evaluateAssignment, pickRoundRobin };
+module.exports = { evaluateAssignment };

@@ -1,23 +1,16 @@
 const { z } = require('zod');
+const { validate, withBudgetRange } = require('../../lib/validate');
 
 const channels = ['PORTAL', 'WALK_IN', 'PHONE', 'OWNED_FORM'];
 
-const requirementInputSchema = z.object({
+const requirementInputSchema = withBudgetRange(z.object({
   unitTypePreference: z.string().trim().max(50).optional().nullable(),
   budgetMin: z.coerce.number().nonnegative().optional().nullable(),
   budgetMax: z.coerce.number().nonnegative().optional().nullable(),
   preferredProjectIds: z.array(z.string().uuid()).optional().default([]),
   possessionPreference: z.string().trim().max(50).optional().nullable(),
   notes: z.string().trim().max(1000).optional().nullable(),
-}).refine(
-  (data) => {
-    if (data.budgetMin != null && data.budgetMax != null) {
-      return data.budgetMax >= data.budgetMin;
-    }
-    return true;
-  },
-  { message: 'budgetMax must be >= budgetMin', path: ['budgetMax'] }
-);
+}));
 
 // One normalized intake shape for all four channels (portal adapter, walk-in
 // form, phone form, owned form). Channel only describes capture; downstream
@@ -51,16 +44,6 @@ const listQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).optional(),
 });
 
-function validate(schema, data) {
-  const result = schema.safeParse(data);
-  if (!result.success) {
-    const err = new Error('Validation failed');
-    err.statusCode = 400;
-    err.details = result.error.flatten();
-    throw err;
-  }
-  return result.data;
-}
 
 module.exports = {
   channels,

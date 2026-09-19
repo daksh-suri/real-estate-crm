@@ -1,10 +1,6 @@
 const { validate, updateLeadSchema, reassignSchema, leadIdParamSchema, listQuerySchema } = require('./validation');
 const service = require('./service');
 
-function orgId(req) {
-  return req.auth.organizationId;
-}
-
 async function list(req, res, next) {
   try {
     const query = validate(listQuerySchema, req.query);
@@ -50,7 +46,7 @@ async function update(req, res, next) {
     const data = validate(updateLeadSchema, req.body);
     const updated = await service.updateLead({
       tenantPrisma: req.tenantPrisma,
-      organizationId: orgId(req),
+      organizationId: req.auth.organizationId,
       leadId,
       data,
     });
@@ -76,7 +72,7 @@ async function reassign(req, res, next) {
     const { assignedAgentId } = validate(reassignSchema, req.body);
     const updated = await service.reassignLead({
       tenantPrisma: req.tenantPrisma,
-      organizationId: orgId(req),
+      organizationId: req.auth.organizationId,
       leadId,
       assignedAgentId,
     });
