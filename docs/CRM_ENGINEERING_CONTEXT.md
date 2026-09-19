@@ -69,7 +69,7 @@ Organization / Tenant (tenant root, global table)
     +-- Properties
     |      +-- Projects ── Units (availability owned by Reservation/Hold/Booking flows, never direct edits)
     |
-    +-- Sales [IMPLEMENTED: Deal, SiteVisit, Reservation/Hold, Booking, PaymentPlan/Obligation/Record; SPECIFIED: Documents]
+    +-- Sales [IMPLEMENTED: Deal, SiteVisit, Reservation/Hold, Booking, PaymentPlan/Obligation/Record, Document; SPECIFIED: Activity/Task]
     +-- Activity / Task [SPECIFIED, not implemented]
     +-- Document [SPECIFIED, not implemented]
     +-- Communication automation, dashboards, reports [DEFERRED / future]
@@ -161,6 +161,7 @@ Established rejections (Phase 2 Part G + scope corrections) — do not build: ge
 | PaymentPlan | Deal-specific **installment schedule container** — one plan per deal | Reusable plan templates (deferred, see DEC-029) | `dealId` required + unique; obligations supplied per deal at creation; no template lookup, no approval state |
 | PaymentObligation | One **expected payment** — plan + amount + due date | Actual payment attempts (that's PaymentRecord) | `status` PENDING/PAID stored; OVERDUE derived at read (PENDING + past dueDate), never written; PAID only via SUCCESS webhook in-tx; no `deletedAt` |
 | PaymentRecord | One **payment attempt/result** — obligation + amount + outcome | Obligation state (derived from records, never edited to match) | `status` PENDING/SUCCESS/FAILED; correction-only via new row + `correctsRecordId` (original preserved); `gatewayReference` + eventId recorded; no `deletedAt`, no PATCH/DELETE |
+| Document | One **file version** — contact + optional deal + type + storage key | A file host (bytes live in object storage, not Postgres) | Row-per-version (`groupId` + `version` + `supersedesId? @unique`); `storageKey` server-derived; `type` free-form (no values specified — see DEC-030); no `deletedAt`, no DELETE endpoint; review via dedicated ops with audit rows |
 | AuditLog | Shared **append-only history row** (first writer: Deal) | A per-entity history table — `Deal.stageHistory` derives from these rows | `actorId` has no FK (history survives actor deletion); `deal.create` + `deal.stage_transition` entries written in the same transaction as the state change |
 | LeadSource / Campaign | Intake attribution config (portal names, campaigns) | Analytics engine | Per-org unique names; campaign→source must be same-org |
 | AssignmentRule | `type + order + config + active` | A script/expression (config holds params only, never logic) | V1: `ROUND_ROBIN` only; config `{ teamId }` must be a visible same-org team |
@@ -172,7 +173,7 @@ Protected distinctions — do not collapse: **Activity = what happened. Task = w
 
 ### Specified but NOT implemented
 
-Document, Activity, Task, OutboxEvent, IntegrationConfig. Phase 3 Part B/C defines their shape; no tables, routes, or logic exist yet. (Deal + AuditLog moved to IMPLEMENTED in Checkpoint 8; SiteVisit in Checkpoint 9; Reservation/Hold in Checkpoint 10; Booking in Checkpoint 11; PaymentPlan/Obligation/Record in Checkpoint 12.)
+Activity, Task, OutboxEvent, IntegrationConfig. Phase 3 Part B/C defines their shape; no tables, routes, or logic exist yet. (Deal + AuditLog moved to IMPLEMENTED in Checkpoint 8; SiteVisit in Checkpoint 9; Reservation/Hold in Checkpoint 10; Booking in Checkpoint 11; PaymentPlan/Obligation/Record in Checkpoint 12; Document in Checkpoint 13.)
 
 ## 8. Critical Architecture & Business Decisions
 
@@ -371,6 +372,14 @@ Document, Activity, Task, OutboxEvent, IntegrationConfig. Phase 3 Part B/C defin
 **Why:** The unique(dealId) + unique(correctsRecordId) + eventId-keyed idempotency make duplicate plans/records structurally impossible; derived OVERDUE keeps the webhook the sole PAID writer with no scheduler to build.
 **Important Edge Cases:** Concurrent duplicate deliveries → one 201 + one 200 replay, single SUCCESS. Same event different payload → 409. FAILED/PENDING records stay visible with obligation unpaid. Malformed/unknown/cross-tenant obligation → 400/404 with zero mutation.
 
+### DEC-030 — Documents version as rows; SigV4 boundary with no provider
+**Status:** IMPLEMENTED
+**Problem / Context:** KYC/case files need upload → review → version history without storing bytes in Postgres, with no storage SDK, gateway, or worker infrastructure in the repo (Phase 3 Phase 11; Phase 2 #12).
+**Decision:** `Document(groupId, version, supersedesId? @unique, contactId, dealId?, type free-form ≤50, status 6-value, storageKey server-derived `{org}/{contact}/{group}/v{N}`, reviewer triple)` — no `deletedAt`, no delete endpoint (Tier 1). New version = new row (`RESUBMITTED` draft flavor of the same draft→SUBMITTED→UNDER_REVIEW path); `type` stays free-form because no allowed values exist in any source (inventing an enum would bless unapproved categories — open: a future checkpoint may enumerate). Storage: `lib/storage.js` SigV4 presigning via stdlib crypto, env-only config, 24h URLs, unconfigured → 503; tests inject a fake. Review (`document:verify/reject` grants for Ops/Manager/Admin; agents hold create/read/upload only) commits transition + reviewer metadata + `audit_logs` (`document.verify/reject`, before/after) in one tx. Upload flow is explicit: upload-url (rate-limited) → complete (server confirms) → submit; URL generation never counts as upload, no storage callback invented.
+**Rules:** Permissions: `document:create|read|upload|verify|reject`. State map is literal (REJECTED exits only via resubmit row; VERIFIED terminal). Resubmit: lock latest row → require REJECTED + latest → insert child + `DOCUMENT_RESUBMIT` idempotency → commit; `supersedesId @unique` + live-group partial index `(org, groupId) WHERE status IN (SUBMITTED,UNDER_REVIEW,RESUBMITTED)` backstop races as P2002 → 409.
+**Why:** Row-per-version plus two DB constraints makes silent overwrite and forked histories structurally impossible; the lock makes the common race serialize while the constraints keep even a reordered future refactor fail-safe.
+**Important Edge Cases:** Concurrent resubmits → one vN+1, loser 409/replay. Abandoned draft + resubmit → 409. Cross-tenant reads hide 404, writes 403/404 per convention. Rejection without trimmed reason → 400 with zero writes (no audit row).
+
 ## 9. Assignment Architecture
 
 ```
@@ -452,14 +461,14 @@ Each pattern exists because application-only checks (`if (!x) create x`) fail un
 - **Error semantics:** 401 unauthenticated/expired/deactivated; 403 guard violation or confirmed cross-tenant write; 404 unknown id OR cross-tenant/deleted read (hide existence); 400 validation, bad transition, soft-deleted write, direct-mutation attempts; 409 uniqueness/idempotency-hash conflicts. Envelope: `{ error: { message, status } }` (+ stack off-prod).
 - **Validation:** zod at the boundary before any service logic; coerce query numerics; unknown-keys policy: immutable/system fields checked against the raw body for precise 400s (see unit/projectId, lead/assignedAgentId pattern).
 - **Pagination/filtering:** `limit` (default 20, cap 100) + `offset` + whitelisted exact-match filters and `contains+insensitive` search. Cursor pagination is Phase 2 guidance for large lists — NOT yet adopted; prefer it for new high-volume list endpoints.
-- **Direct mutation restrictions (do not bypass):** no `POST /leads`; no `availabilityStatus` or `Unit.projectId` writes; no assignment via `PATCH /leads`; no auto-merge of duplicates; no generic `PATCH /site-visits` (status/slot move only via dedicated ops); no generic `PATCH /reservations` (status/type/unitId/dealId immutable — ACTIVE moves only via release/expiry/Booking); no `PATCH/PUT/DELETE /bookings` (finalized rows mutate only via dedicated cancel); no `PATCH/PUT/DELETE` on any payment row (obligations flip PAID only via webhook; records correct only via new row + `correctsRecordId`).
-- **Endpoint naming:** plural kebab resources (`/enquiries`, `/leads`, `/lead-sources`, `/campaigns`, `/assignment-rules`, `/projects`, `/units`, `/contacts`, `/requirements`, `/teams`, `/organizations`, `/deals`, `/site-visits`, `/reservations`, `/bookings`, `/payment-plans`, `/payment-obligations`, `/payment-records`, `/webhooks/payment-gateway`); actions as subpaths (`/:id/reassign`, `/:id/merge`, `/:projectId/units`, `/:id/stage-transition`, `/:id/confirm|cancel|complete|no-show|reschedule`, `/:id/release`, `/:id/cancel`).
+- **Direct mutation restrictions (do not bypass):** no `POST /leads`; no `availabilityStatus` or `Unit.projectId` writes; no assignment via `PATCH /leads`; no auto-merge of duplicates; no generic `PATCH /site-visits` (status/slot move only via dedicated ops); no generic `PATCH /reservations` (status/type/unitId/dealId immutable — ACTIVE moves only via release/expiry/Booking); no `PATCH/PUT/DELETE /bookings` (finalized rows mutate only via dedicated cancel); no `PATCH/PUT/DELETE` on any payment row (obligations flip PAID only via webhook; records correct only via new row + `correctsRecordId`); no `PATCH/PUT/DELETE /documents` (drafts advance via complete/submit, review via verify/reject, history via resubmit row).
+- **Endpoint naming:** plural kebab resources (`/enquiries`, `/leads`, `/lead-sources`, `/campaigns`, `/assignment-rules`, `/projects`, `/units`, `/contacts`, `/requirements`, `/teams`, `/organizations`, `/deals`, `/site-visits`, `/reservations`, `/bookings`, `/payment-plans`, `/payment-obligations`, `/payment-records`, `/webhooks/payment-gateway`, `/documents`); actions as subpaths (`/:id/reassign`, `/:id/merge`, `/:projectId/units`, `/:id/stage-transition`, `/:id/confirm|cancel|complete|no-show|reschedule`, `/:id/release`, `/:id/cancel`, `/:id/verify|reject|submit|complete|resubmit`, `/:id/upload-url|access-url`).
 
 ## 13. Testing Philosophy
 
 Strong tests are required for: tenant isolation, authorization matrix, transactions, concurrent requests, idempotency (replay + conflict + races), state transitions (valid and invalid), uniqueness (including reopen conflicts), soft-delete read/write behavior, cross-organization attacks, external failure boundaries (malformed payloads preserved, not dropped), assignment (order, concurrency, deactivation, manual-wins), contact matching tiers, repeat-enquiry attach-vs-create.
 
-Snapshot (not a requirement): **385 tests / 13 suites** — auth 61, tenantIsolation 50, contactsRequirements 56, enquiryLead 33, organizationsTeams 33, reservations 32, siteVisits 29, propertyHierarchy 28, bookings 21, payments 17, dealsPipeline 20, refreshConcurrency 3, health 2. Concurrency-sensitive tests are re-run multiple times before sign-off. Never weaken an existing test to make a new feature pass.
+Snapshot (not a requirement): **405 tests / 14 suites** — auth 61, tenantIsolation 50, contactsRequirements 56, enquiryLead 33, organizationsTeams 33, reservations 32, siteVisits 29, propertyHierarchy 28, bookings 21, documents 20, payments 17, dealsPipeline 20, refreshConcurrency 3, health 2. Concurrency-sensitive tests are re-run multiple times before sign-off. Never weaken an existing test to make a new feature pass.
 
 ## 14. Implementation Status
 
@@ -475,9 +484,9 @@ Snapshot (not a requirement): **385 tests / 13 suites** — auth 61, tenantIsola
 | 8 | Deal + pipeline | COMPLETE | Fixed 10-value enum, map-validated transitions, shared audit_logs, auto-convert; 20 integration tests |
 | 9 | Site visit | COMPLETE | Agent + Project resources, 60/15 defaults, lock + re-check, idempotent schedule, dedicated lifecycle/reschedule ops; 29 integration tests |
 | 10 | Reservation & Unit Hold | COMPLETE | One-row RESERVATION/HOLD discriminator, dealId required (V1), Unit FOR UPDATE + re-check, idempotent create, dedicated release, named expiry worker; 32 integration tests |
-| 11 | Booking | COMPLETE | ACTIVE RESERVATION→CONVERTED + Unit RESERVED→BOOKED in one tx, reservationId required + unique, idempotent create, dedicated cancel; 21 integration tests; uncommitted on `dev` at time of writing |
-| 12 | Payments | COMPLETE | Deal-specific plans, derived OVERDUE, correction-only records, idempotent provider-neutral webhook; 17 integration tests; uncommitted on `dev` at time of writing |
-| 13 | Documents | NOT STARTED | Build on stable Booking/Payment |
+| 11 | Booking | COMPLETE | ACTIVE RESERVATION→CONVERTED + Unit RESERVED→BOOKED in one tx, reservationId required + unique, idempotent create, dedicated cancel; 21 integration tests |
+| 12 | Payments | COMPLETE | Deal-specific plans, derived OVERDUE, correction-only records, idempotent provider-neutral webhook; 17 integration tests |
+| 13 | Documents | COMPLETE | Row-per-version lifecycle, SigV4 storage boundary, role-gated verify/reject with audit, idempotent resubmit; 20 integration tests; uncommitted on `dev` at time of writing |
 | 14+ | Activity/Task, jobs/outbox, audit pass, frontend, dashboards, observability | NOT STARTED | Phase 3 Part N order |
 
 Checkpoint 7 verified status: intake pipeline; Checkpoint-5 matching reuse (no second implementation); Lead foundation (no manual create); ROUND_ROBIN (+deterministic, concurrent-safe) and manual reassignment; IdempotencyKey table + replay/conflict/race semantics; partial-index + row-lock concurrency protection; 33 integration tests; project-less enquiries open separate Leads; Activity integration deferred (no Activity table yet); PROJECT_AFFINITY/TERRITORY/MANUAL_OVERRIDE_CHECK deferred.
@@ -491,6 +500,8 @@ Checkpoint 10 verified status: One-row RESERVATION/HOLD discriminator (no UnitHo
 Checkpoint 11 verified status: `Booking(unitId, dealId, reservationId! @unique, bookedAt server-set, cancel triple)` — no status enum, no `deletedAt`; create converts ACTIVE type=RESERVATION only (HOLD rejects 400) via Unit `FOR UPDATE` + in-lock re-check (Booking insert + RESERVED→BOOKED + ACTIVE→CONVERTED + `BOOKING_CREATE` idempotency in one tx); no `Deal.stage` move (agent uses existing transition op); no audit/outbox rows per spec; cancel preserves row (actor + trimmed reason + timestamp), frees BOOKED→AVAILABLE, keeps CONVERTED, double-cancel 400; no PATCH/PUT/DELETE; 21 integration tests incl. 3 concurrent booking races; no Payment/Document/Activity/Task/Notification/RERA leakage.
 
 Checkpoint 12 verified status: `PaymentPlan(dealId! @unique)` + `PaymentObligation(plan, dueAmount, dueDate, PENDING/PAID stored)` + `PaymentRecord(obligation, amount, PENDING/SUCCESS/FAILED, gatewayReference?, correctsRecordId? @unique self-FK)` — no `deletedAt`; explicit idempotent `POST /payment-plans {bookingId, obligations[]}` (deal-specific schedule, unique(dealId) backstop, booking/deal state untouched); provider-neutral unauthenticated `POST /webhooks/payment-gateway` (eventId = `PAYMENT_WEBHOOK` key, tenant from obligation row, obligation `FOR UPDATE` + re-read, record + SUCCESS→PAID in one tx, already-PAID + SUCCESS → 409); OVERDUE derived at read, never written; corrections via new row + `correctsRecordId` (same-obligation enforced); no `Deal.stage`/Booking/Unit writes, no audit/outbox rows per spec, no PATCH/DELETE; 17 integration tests incl. concurrent duplicate deliveries; no Document/Activity/Task/Notification/RERA/refund/ledger leakage.
+
+Checkpoint 13 verified status: `Document(groupId, version, supersedesId? @unique, contactId, dealId?, free-form type ≤50, 6-state lifecycle, server-derived storageKey, reviewer triple)` — no `deletedAt`, no DELETE endpoint; agent flow create → upload-url (rate-limited) → complete → submit, review via verify/reject (grants only, actor/timestamp server-set, trimmed reason, audit row in-tx); resubmit inserts vN+1 as RESUBMITTED sharing group/type/links (lock latest row → require REJECTED + latest → insert + `DOCUMENT_RESUBMIT` key); `supersedesId @unique` + live-group partial index `(org, groupId) WHERE SUBMITTED/UNDER_REVIEW/RESUBMITTED` backstop races as P2002 → 409; storage is SigV4 presigning via stdlib crypto (env-only, 24h URLs, unconfigured → 503, fake in tests); 20 integration tests incl. concurrent resubmits + raw P2002 backstop proofs; no Activity/Task/Notification/RERA/OCR/AI/customer-auth leakage.
 
 ## 15. Deferred vs Out of Scope
 
@@ -543,4 +554,4 @@ Checkpoint 12 verified status: `PaymentPlan(dealId! @unique)` + `PaymentObligati
 **Stack:** JavaScript + React + Node/Express + PostgreSQL + Prisma.
 **Architecture:** Modular monolith + organization-based multi-tenancy.
 **Core principles:** Postgres is the source of truth. Tenancy is mandatory and fail-closed. Permissions/scopes, never role-name checks. Transactions guard multi-record flows. Constraints + row locks guard concurrency. Idempotency lives in a tenant-safe table. Activity = happened; Task = to-do; Enquiry = intake event; Lead = opportunity. Project repeats may reuse an OPEN Lead; project-less enquiries never auto-reuse. No bypassing auth/tenancy/transactions/idempotency. No speculative infra. No deferred features without a decision.
-**Current checkpoint:** 12 (Payments) implemented and validated; Documents next.
+**Current checkpoint:** 13 (Documents) implemented and validated; Activity/Task next.

@@ -388,6 +388,33 @@ async function assertPaymentRecordIntegrity(organizationId, data, rawPrisma) {
   }
 }
 
+async function assertDocumentIntegrity(organizationId, data, rawPrisma) {
+  if (data.contactId) {
+    const contact = await assertSameOrgReference(rawPrisma, 'contact', data.contactId, organizationId, 'Document contactId');
+    if (contact.deletedAt) {
+      throw new CrossTenantError(`Document cannot be attached to soft-deleted contact ${data.contactId}`);
+    }
+  }
+  if (data.dealId) {
+    const deal = await assertSameOrgReference(rawPrisma, 'deal', data.dealId, organizationId, 'Document dealId');
+    if (deal.deletedAt) {
+      throw new CrossTenantError(`Document cannot be attached to soft-deleted deal ${data.dealId}`);
+    }
+  }
+  if (data.supersedesId) {
+    await assertSameOrgReference(rawPrisma, 'document', data.supersedesId, organizationId, 'Document supersedesId');
+  }
+}
+
+function withDocumentExisting(existing, patch) {
+  return {
+    contactId: existing.contactId,
+    dealId: existing.dealId,
+    supersedesId: existing.supersedesId,
+    ...patch,
+  };
+}
+
 function withPaymentObligationExisting(existing, patch) {
   return { paymentPlanId: existing.paymentPlanId, ...patch };
 }
@@ -588,6 +615,9 @@ function wrapModel(modelName, rawModel, organizationId, guardClient) {
       if (modelName === 'paymentRecord') {
         await assertPaymentRecordIntegrity(organizationId, data, guards);
       }
+      if (modelName === 'document') {
+        await assertDocumentIntegrity(organizationId, data, guards);
+      }
 
       return rawModel.create({ ...args, data });
     },
@@ -684,6 +714,9 @@ function wrapModel(modelName, rawModel, organizationId, guardClient) {
       if (modelName === 'paymentRecord' && args.data) {
         await assertPaymentRecordIntegrity(organizationId, withPaymentRecordExisting(existing, args.data), guards);
       }
+      if (modelName === 'document' && args.data) {
+        await assertDocumentIntegrity(organizationId, withDocumentExisting(existing, args.data), guards);
+      }
 
       // Perform update using the record's PK (id) which is globally unique and valid.
       // This avoids generating an invalid where: { id, organizationId } for Prisma update.
@@ -774,6 +807,9 @@ function wrapModel(modelName, rawModel, organizationId, guardClient) {
         if (modelName === 'paymentRecord' && args.update) {
           await assertPaymentRecordIntegrity(organizationId, withPaymentRecordExisting(existing, args.update), guards);
         }
+        if (modelName === 'document' && args.update) {
+          await assertDocumentIntegrity(organizationId, withDocumentExisting(existing, args.update), guards);
+        }
         const whereForUpdate = { id: existing.id };
         return rawModel.update({ where: whereForUpdate, data: args.update });
       }
@@ -828,6 +864,9 @@ function wrapModel(modelName, rawModel, organizationId, guardClient) {
       }
       if (modelName === 'paymentRecord') {
         await assertPaymentRecordIntegrity(organizationId, create, guards);
+      }
+      if (modelName === 'document') {
+        await assertDocumentIntegrity(organizationId, create, guards);
       }
       return rawModel.create({ data: create });
     },
@@ -895,6 +934,7 @@ function createTenantPrisma(organizationId) {
     paymentPlan: wrapModel('paymentPlan', prisma.paymentPlan, organizationId),
     paymentObligation: wrapModel('paymentObligation', prisma.paymentObligation, organizationId),
     paymentRecord: wrapModel('paymentRecord', prisma.paymentRecord, organizationId),
+    document: wrapModel('document', prisma.document, organizationId),
 
     // Preserve raw access for advanced needs, but clearly marked as unscoped
     _raw: prisma,
@@ -946,6 +986,7 @@ function createTenantPrisma(organizationId) {
             paymentPlan: txWrap('paymentPlan', rawTx.paymentPlan),
             paymentObligation: txWrap('paymentObligation', rawTx.paymentObligation),
             paymentRecord: txWrap('paymentRecord', rawTx.paymentRecord),
+            document: txWrap('document', rawTx.document),
             _raw: rawTx,
             _organizationId: organizationId,
           };

@@ -121,6 +121,17 @@ enum DealStage {
   CLOSED_LOST
 }
 
+// V1 document lifecycle (Phase 3). Terminal states have no exits; a new
+// version is a new row (RESUBMITTED draft), never an overwrite.
+enum DocumentStatus {
+  NOT_SUBMITTED
+  SUBMITTED
+  UNDER_REVIEW
+  VERIFIED
+  REJECTED
+  RESUBMITTED
+}
+
 // V1 reservation discriminator. HOLD reuses the Reservation row (no separate
 // UnitHold table); the Unit.availabilityStatus effect differs (ON_HOLD vs
 // RESERVED) but the lock-and-recheck machinery is identical.
@@ -180,6 +191,7 @@ model Organization {
   paymentPlans        PaymentPlan[]
   paymentObligations PaymentObligation[]
   paymentRecords      PaymentRecord[]
+  documents           Document[]
 
   @@map("organizations")
 }
@@ -291,6 +303,7 @@ model Contact {
   leads     Lead[]
   deals     Deal[]
   siteVisits SiteVisit[]
+  documents Document[]
 
   // Deterministic duplicate protection: same org + same normalized email + same normalized phone (both non-null) is considered same identity
   @@unique([organizationId, normalizedEmail, normalizedPhone])
@@ -702,6 +715,7 @@ model Deal {
   reservations Reservation[]
   bookings     Booking[]
   paymentPlans PaymentPlan[]
+  documents    Document[]
 
   @@index([organizationId])
   @@index([organizationId, stage])
@@ -937,4 +951,44 @@ model PaymentRecord {
   @@index([obligationId])
   @@index([gatewayReference])
   @@map("payment_records")
+}
+
+// ---------------------------------------------------------------------------
+// TENANT-SCOPED — Documents (Checkpoint 13)
+// One row per version. Versions share groupId; supersedesId chains child to
+// parent (@unique: one child per parent). Tier 1: finalized rows are never
+// overwritten or deleted — resubmission inserts. No deletedAt by design.
+// `type` is free-form (no values specified anywhere — see DEC-030).
+// storageKey is server-derived, never client-supplied.
+// ---------------------------------------------------------------------------
+
+model Document {
+  id               String         @id @default(uuid())
+  organizationId   String
+  groupId          String
+  version          Int            @default(1)
+  supersedesId     String?        @unique
+  contactId        String
+  dealId           String?
+  type             String
+  status           DocumentStatus @default(NOT_SUBMITTED)
+  storageKey       String
+  rejectionReason  String?
+  reviewedBy       String?
+  reviewedAt       DateTime?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  contact      Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  // SetNull: the document survives deal deletion; the deal never owns it.
+  deal         Deal?        @relation(fields: [dealId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  supersedes   Document?    @relation("VersionChain", fields: [supersedesId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  supersededBy Document?    @relation("VersionChain")
+
+  @@index([organizationId])
+  @@index([organizationId, groupId])
+  @@index([contactId])
+  @@index([dealId])
+  @@map("documents")
 }

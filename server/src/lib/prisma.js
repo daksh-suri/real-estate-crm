@@ -41,6 +41,7 @@ const TENANT_MODELS = new Set([
   'paymentPlan',
   'paymentObligation',
   'paymentRecord',
+  'document',
 ]);
 
 const GLOBAL_MODELS = new Set([
