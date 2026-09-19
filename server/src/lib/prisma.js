@@ -44,6 +44,7 @@ const TENANT_MODELS = new Set([
   'document',
   'activity',
   'task',
+  'outboxEvent',
 ]);
 
 const GLOBAL_MODELS = new Set([

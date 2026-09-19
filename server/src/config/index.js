@@ -60,6 +60,25 @@ const config = {
     loginWindowMs: 15 * 60 * 1000,
     loginMax: isTest ? 1000 : 20, // generous for test suite
   },
+
+  // Background worker (Checkpoint 15). All values overridable via env;
+  // defaults are sensible, documented in DEC-032, and cheap to change.
+  worker: {
+    // Reservation/hold expiry sweep cadence (Phase 3: ~every minute).
+    expiryIntervalMs: parseInt(process.env.WORKER_EXPIRY_INTERVAL_MS || '60000', 10),
+    // Outbox poll cadence.
+    outboxIntervalMs: parseInt(process.env.WORKER_OUTBOX_INTERVAL_MS || '10000', 10),
+    // Max events claimed per outbox poll.
+    outboxBatchSize: parseInt(process.env.WORKER_OUTBOX_BATCH || '25', 10),
+    // Retries: attempts are counted from the claim; delay(attempts) =
+    // min(baseDelayMs * 2^(attempts-1), maxDelayMs). attempts >= maxAttempts
+    // transitions the event to FAILED (visible, never silently dropped).
+    maxAttempts: parseInt(process.env.WORKER_MAX_ATTEMPTS || '10', 10),
+    baseDelayMs: parseInt(process.env.WORKER_BASE_DELAY_MS || '30000', 10),
+    maxDelayMs: parseInt(process.env.WORKER_MAX_DELAY_MS || '3600000', 10),
+    // /health reports worker 'stale' when the heartbeat is older than this.
+    heartbeatStaleMs: parseInt(process.env.WORKER_HEARTBEAT_STALE_MS || '300000', 10),
+  },
 };
 
 function parseDuration(str) {

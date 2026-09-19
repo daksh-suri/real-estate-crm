@@ -696,6 +696,7 @@ function wrapModel(modelName, rawModel, organizationId, guardClient) {
       if (modelName === 'task') {
         await assertTaskIntegrity(organizationId, data, guards);
       }
+      // OutboxEvent carries no foreign refs — org scoping is the whole guard.
 
       return rawModel.create({ ...args, data });
     },
@@ -1033,6 +1034,7 @@ function createTenantPrisma(organizationId) {
     document: wrapModel('document', prisma.document, organizationId),
     activity: wrapModel('activity', prisma.activity, organizationId),
     task: wrapModel('task', prisma.task, organizationId),
+    outboxEvent: wrapModel('outboxEvent', prisma.outboxEvent, organizationId),
 
     // Preserve raw access for advanced needs, but clearly marked as unscoped
     _raw: prisma,
@@ -1087,6 +1089,7 @@ function createTenantPrisma(organizationId) {
             document: txWrap('document', rawTx.document),
             activity: txWrap('activity', rawTx.activity),
             task: txWrap('task', rawTx.task),
+            outboxEvent: txWrap('outboxEvent', rawTx.outboxEvent),
             _raw: rawTx,
             _organizationId: organizationId,
           };

@@ -7,17 +7,20 @@
 // Checkpoint 13 — Documents (Document; row-per-version, SigV4 boundary)
 // Checkpoint 14 — Activity & Task (immutable log + OPEN/DONE work items,
 // OVERDUE derived, no auto-completion, no rules engine)
+// Checkpoint 15 — Background jobs (OutboxEvent, named worker, expiry sweep,
+// notification lanes; no Redis/queues)
 //
 // TENANT CLASSIFICATION
 // ---------------------
-// GLOBAL (no organizationId): Permission, Organization (is the tenant itself)
+// GLOBAL (no organizationId): Permission, Organization (is the tenant itself),
+//   WorkerHeartbeat (system-owned liveness row, no tenant data inside)
 // TENANT-SCOPED (organizationId NOT NULL, indexed, FK to Organization):
 //   Role, Team, User, RolePermission, TeamMembership, RefreshToken,
 //   Contact, Requirement, PossibleDuplicate, Project, Unit,
 //   LeadSource, Campaign, Enquiry, Lead, AssignmentRule, RoundRobinState,
 //   IdempotencyKey, Deal, AuditLog, SiteVisit, Reservation, Booking,
 //   PaymentPlan, PaymentObligation, PaymentRecord, Document,
-//   Activity, Task
+//   Activity, Task, OutboxEvent
 //
 // Tenant scoping is enforced centrally via server/src/lib/prisma.js and
 // server/src/lib/tenant.js — see those files for the fail-closed extension.
@@ -198,6 +201,7 @@ model Organization {
   documents           Document[]
   activities          Activity[]
   tasks               Task[]
+  outboxEvents        OutboxEvent[]
 
   @@map("organizations")
 }
@@ -1069,4 +1073,57 @@ model Task {
   @@index([organizationId, dueAt])
   @@index([deletedAt])
   @@map("tasks")
+}
+
+// ---------------------------------------------------------------------------
+// TENANT-SCOPED — Transactional outbox (Checkpoint 15)
+// Business mutation + event row commit in the SAME transaction, or both roll
+// back. The worker claims PENDING rows (FOR UPDATE SKIP LOCKED), dispatches
+// via the named handler for eventType, and marks PROCESSED only after
+// success. At-least-once delivery: a crash between dispatch and marking
+// leaves the row retryable. No per-type tables; payload is JSON, never code.
+// ---------------------------------------------------------------------------
+
+enum OutboxStatus {
+  PENDING
+  PROCESSED
+  FAILED
+}
+
+model OutboxEvent {
+  id             String       @id @default(uuid())
+  organizationId String
+  eventType      String
+  payload        Json         @default("{}")
+  status         OutboxStatus @default(PENDING)
+  attempts       Int          @default(0)
+  availableAt    DateTime     @default(now())
+  processedAt    DateTime?
+  failedAt       DateTime?
+  lastError      String?      @db.Text
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([organizationId])
+  @@index([status, availableAt])
+  @@map("outbox_events")
+}
+
+// ---------------------------------------------------------------------------
+// GLOBAL — Worker liveness (Checkpoint 15)
+// System-owned heartbeat row, no tenant data inside (counts only). The HTTP
+// process never writes it; the worker upserts id 'main' every scheduler
+// cycle and /health reports live/stale/never from its age. Raw Prisma only —
+// deliberately outside the tenant wrapper (documented worker bypass).
+// ---------------------------------------------------------------------------
+
+model WorkerHeartbeat {
+  id         String   @id
+  lastBeatAt DateTime @default(now())
+  detail     Json     @default("{}")
+  updatedAt  DateTime @updatedAt
+
+  @@map("worker_heartbeats")
 }

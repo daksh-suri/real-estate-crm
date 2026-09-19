@@ -69,7 +69,8 @@ Organization / Tenant (tenant root, global table)
     +-- Properties
     |      +-- Projects ── Units (availability owned by Reservation/Hold/Booking flows, never direct edits)
     |
-    +-- Sales [IMPLEMENTED: Deal, SiteVisit, Reservation/Hold, Booking, PaymentPlan/Obligation/Record, Document, Activity/Task; SPECIFIED: (none — Phase 3 Part N order for frontend/dashboards/observability)]
+    +-- Sales [IMPLEMENTED: Deal, SiteVisit, Reservation/Hold, Booking, PaymentPlan/Obligation/Record, Document, Activity/Task; SPECIFIED: (none)]
+    +-- Jobs [IMPLEMENTED: OutboxEvent, named worker (expiry sweep + outbox processor), notification lanes, worker heartbeat]
     +-- Activity / Task [SPECIFIED, not implemented]
     +-- Document [SPECIFIED, not implemented]
     +-- Communication automation, dashboards, reports [DEFERRED / future]
@@ -175,7 +176,7 @@ Protected distinctions — do not collapse: **Activity = what happened. Task = w
 
 ### Specified but NOT implemented
 
-OutboxEvent, IntegrationConfig. Phase 3 Part B/C defines their shape; no tables, routes, or logic exist yet. (Deal + AuditLog moved to IMPLEMENTED in Checkpoint 8; SiteVisit in Checkpoint 9; Reservation/Hold in Checkpoint 10; Booking in Checkpoint 11; PaymentPlan/Obligation/Record in Checkpoint 12; Document in Checkpoint 13; Activity/Task in Checkpoint 14.)
+IntegrationConfig. Phase 3 Part B/C defines their shape; no tables, routes, or logic exist yet. (Deal + AuditLog moved to IMPLEMENTED in Checkpoint 8; SiteVisit in Checkpoint 9; Reservation/Hold in Checkpoint 10; Booking in Checkpoint 11; PaymentPlan/Obligation/Record in Checkpoint 12; Document in Checkpoint 13; Activity/Task in Checkpoint 14; OutboxEvent in Checkpoint 15.)
 
 ## 8. Critical Architecture & Business Decisions
 
@@ -390,6 +391,14 @@ OutboxEvent, IntegrationConfig. Phase 3 Part B/C defines their shape; no tables,
 **Why:** One atomic explicit path covers the agent workflow with zero automation surface; the derived OVERDUE keeps a single writer per lifecycle with no scheduler to build.
 **Important Edge Cases:** Task-creation failure rolls back the activity (and vice versa). Concurrent completes → one 200, loser 409. Soft-deleted assignee/contact → 400. Deferred/open: rule-based Activity→Task generation, intake-time activity logging (Phase 3 L352), assignee workload/territory logic, `deletedAt` restoration flow.
 
+### DEC-032 — Single worker, transactional outbox, named jobs only
+**Status:** IMPLEMENTED
+**Problem / Context:** Reservation expiry, notification dispatch, and future side effects need shared background infrastructure without Redis/queues/services (Phase 3 Phase 13; context §5.8).
+**Decision:** `OutboxEvent(org, eventType string, payload Json, PENDING/PROCESSED/FAILED, attempts, availableAt, processedAt?, failedAt?, lastError?)` + global `WorkerHeartbeat(id, lastBeatAt, detail)` (system-owned, no tenant data; deliberate raw-Prisma bypass, documented). Rule: business mutation + event row in the SAME tx (`enqueueOutbox(tx, …)`), or both roll back. Processor claims atomically (`UPDATE … FOR UPDATE SKIP LOCKED`, attempts pre-incremented so crashes count toward the ceiling), dispatches OUTSIDE locks via the named handler for `eventType` (only `NOTIFICATION_INTERNAL/CUSTOMER` exist; unknown → retry → FAILED, never silent), marks PROCESSED only after success. At-least-once documented: providers get the stable event id as idempotency key. Retry: `min(30s·2^(attempts-1), 1h)`, 10 attempts, then FAILED with reason kept (all env-overridable in `config.worker`). Expiry sweep reuses `expireDueReservations` unchanged on a 60s cadence; no expiry outbox events (no real side effect exists — ceremony refused). Notifications: `lane` in payload, provider interface + log-only default (never claims external delivery); customer lane re-reads `communicationConsent` at dispatch and suppresses OPTED_OUT as PROCESSED-with-note; internal skips the gate. Scheduler runs the two named jobs with overlap guards + per-cycle heartbeat; `node src/worker.js` separate process with SIGTERM/SIGINT graceful stop. `/health` extended (DB ping + worker live/stale/never) without breaking existing assertions. No worker CRM role; no new permissions (enqueue is service-layer).
+**Rules:** No new event type without a named handler. No dispatch before commit, no PROCESSED before success, no FAILED auto-retry, no event deletion. Worker never uses request tenant middleware — org travels on the event/row.
+**Why:** One atomic claim statement makes horizontal scale structurally safe; pre-incremented attempts make crash loops terminate; derived-everything-else keeps the worker to four small files.
+**Important Edge Cases:** Crash between dispatch and marking → retried (duplicate possible at the provider — hence stable keys). Concurrent workers split the batch via SKIP LOCKED (tested: 5 events, 5 processed, 5 sends). Stale heartbeat → `stale` (5min default), never blocks deploys.
+
 ## 9. Assignment Architecture
 
 ```
@@ -478,7 +487,7 @@ Each pattern exists because application-only checks (`if (!x) create x`) fail un
 
 Strong tests are required for: tenant isolation, authorization matrix, transactions, concurrent requests, idempotency (replay + conflict + races), state transitions (valid and invalid), uniqueness (including reopen conflicts), soft-delete read/write behavior, cross-organization attacks, external failure boundaries (malformed payloads preserved, not dropped), assignment (order, concurrency, deactivation, manual-wins), contact matching tiers, repeat-enquiry attach-vs-create.
 
-Snapshot (not a requirement): **419 tests / 15 suites** — auth 61, tenantIsolation 50, contactsRequirements 56, enquiryLead 33, organizationsTeams 33, reservations 32, siteVisits 29, propertyHierarchy 28, bookings 21, documents 20, payments 17, activitiesTasks 14, dealsPipeline 20, refreshConcurrency 3, health 2. Concurrency-sensitive tests are re-run multiple times before sign-off. Never weaken an existing test to make a new feature pass.
+Snapshot (not a requirement): **434 tests / 16 suites** — auth 61, tenantIsolation 50, contactsRequirements 56, enquiryLead 33, organizationsTeams 33, reservations 32, siteVisits 29, propertyHierarchy 28, bookings 21, documents 20, payments 17, workerOutbox 15, activitiesTasks 14, dealsPipeline 20, refreshConcurrency 3, health 2. Concurrency-sensitive tests are re-run multiple times before sign-off. Never weaken an existing test to make a new feature pass.
 
 ## 14. Implementation Status
 
@@ -498,7 +507,8 @@ Snapshot (not a requirement): **419 tests / 15 suites** — auth 61, tenantIsola
 | 12 | Payments | COMPLETE | Deal-specific plans, derived OVERDUE, correction-only records, idempotent provider-neutral webhook; 17 integration tests |
 | 13 | Documents | COMPLETE | Row-per-version lifecycle, SigV4 storage boundary, role-gated verify/reject with audit, idempotent resubmit; 20 integration tests |
 | 14 | Activity & Task | COMPLETE | Immutable activity log, OPEN/DONE tasks with derived OVERDUE, atomic explicit follow-ups, dedicated complete; 14 integration tests; uncommitted on `dev` at time of writing |
-| 15+ | Jobs/outbox, audit pass, frontend, dashboards, observability | NOT STARTED | Phase 3 Part N order |
+| 15 | Background jobs & outbox | COMPLETE | OutboxEvent + SKIP LOCKED processor, named scheduler (expiry + outbox), notification lanes with dispatch-time consent, heartbeat health; 15 integration tests; uncommitted on `dev` at time of writing |
+| 16+ | Audit pass, frontend, dashboards, observability | NOT STARTED | Phase 3 Part N order |
 
 Checkpoint 7 verified status: intake pipeline; Checkpoint-5 matching reuse (no second implementation); Lead foundation (no manual create); ROUND_ROBIN (+deterministic, concurrent-safe) and manual reassignment; IdempotencyKey table + replay/conflict/race semantics; partial-index + row-lock concurrency protection; 33 integration tests; project-less enquiries open separate Leads; Activity integration deferred (no Activity table yet); PROJECT_AFFINITY/TERRITORY/MANUAL_OVERRIDE_CHECK deferred.
 
@@ -515,6 +525,8 @@ Checkpoint 12 verified status: `PaymentPlan(dealId! @unique)` + `PaymentObligati
 Checkpoint 13 verified status: `Document(groupId, version, supersedesId? @unique, contactId, dealId?, free-form type ≤50, 6-state lifecycle, server-derived storageKey, reviewer triple)` — no `deletedAt`, no DELETE endpoint; agent flow create → upload-url (rate-limited) → complete → submit, review via verify/reject (grants only, actor/timestamp server-set, trimmed reason, audit row in-tx); resubmit inserts vN+1 as RESUBMITTED sharing group/type/links (lock latest row → require REJECTED + latest → insert + `DOCUMENT_RESUBMIT` key); `supersedesId @unique` + live-group partial index `(org, groupId) WHERE SUBMITTED/UNDER_REVIEW/RESUBMITTED` backstop races as P2002 → 409; storage is SigV4 presigning via stdlib crypto (env-only, 24h URLs, unconfigured → 503, fake in tests); 20 integration tests incl. concurrent resubmits + raw P2002 backstop proofs; no Activity/Task/Notification/RERA/OCR/AI/customer-auth leakage.
 
 Checkpoint 14 verified status: `Activity(contactId, leadId?, dealId?, free-form type/outcome, notes Text, createdBy server-derived)` immutable (no PATCH/DELETE) + `Task(assignedTo, relatedContactId?, relatedDealId?, title, dueAt, OPEN/DONE stored, deletedAt retention-only)`; explicit `followUpTask` created atomically in the same tx (`ACTIVITY_CREATE`-keyed); no outcome sniffing, no auto-completion, no rules engine; OVERDUE derived at read + list filter, never stored; DONE terminal (lock → re-check → mutate, repeat/race → 409); contact merge now also reassigns Activity + Document rows whole (task reference links untouched like deal/visit links); 14 integration tests incl. rollback + concurrent completes; no Voice/Journeys/messaging/rules-engine/workload/territory leakage.
+
+Checkpoint 15 verified status: `OutboxEvent(org, eventType string, payload Json, PENDING/PROCESSED/FAILED, attempts, availableAt, processedAt?, failedAt?, lastError?)` + global `WorkerHeartbeat(id, lastBeatAt, detail)` (system-owned, raw-Prisma bypass documented); `enqueueOutbox(tx, …)` same-tx rule; atomic claim (`UPDATE … FOR UPDATE SKIP LOCKED`, attempts pre-incremented) → dispatch outside locks via named handler → PROCESSED only after success; retry `min(30s·2^(attempts-1), 1h)` to 10 attempts then FAILED with reason (all env-overridable); expiry sweep reuses `expireDueReservations` unchanged on 60s cadence (no expiry events — no real side effect); notification lanes with provider interface + log default, stable event-id keys, customer consent re-read at dispatch (OPTED_OUT → PROCESSED-suppressed), internal skips gate; scheduler with overlap guards + heartbeat, `node src/worker.js` with graceful stop; `/health` extended (db + worker live/stale/never, old assertions intact); 15 integration tests incl. commit/rollback pairing, crash-window retry, concurrent claim split, tenant forgery; no Redis/queues/services/voice/AI/provider-integration leakage.
 
 ## 15. Deferred vs Out of Scope
 
@@ -567,4 +579,4 @@ Checkpoint 14 verified status: `Activity(contactId, leadId?, dealId?, free-form 
 **Stack:** JavaScript + React + Node/Express + PostgreSQL + Prisma.
 **Architecture:** Modular monolith + organization-based multi-tenancy.
 **Core principles:** Postgres is the source of truth. Tenancy is mandatory and fail-closed. Permissions/scopes, never role-name checks. Transactions guard multi-record flows. Constraints + row locks guard concurrency. Idempotency lives in a tenant-safe table. Activity = happened; Task = to-do; Enquiry = intake event; Lead = opportunity. Project repeats may reuse an OPEN Lead; project-less enquiries never auto-reuse. No bypassing auth/tenancy/transactions/idempotency. No speculative infra. No deferred features without a decision.
-**Current checkpoint:** 14 (Activity & Task) implemented and validated; jobs/outbox + audit pass next.
+**Current checkpoint:** 15 (Background jobs & outbox) implemented and validated; audit pass + frontend next.
