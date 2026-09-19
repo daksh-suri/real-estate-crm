@@ -3,7 +3,10 @@
 // Checkpoint 11 — Booking (Booking; Reservation ACTIVE → CONVERTED,
 // Unit RESERVED → BOOKED, one booking per reservation)
 // Checkpoint 12 — Payments (PaymentPlan/Obligation/Record; deal-specific
-// installment schedules, correction-only records, idempotent webhook)
+// installment schedules, correction-only records, idempotency webhook)
+// Checkpoint 13 — Documents (Document; row-per-version, SigV4 boundary)
+// Checkpoint 14 — Activity & Task (immutable log + OPEN/DONE work items,
+// OVERDUE derived, no auto-completion, no rules engine)
 //
 // TENANT CLASSIFICATION
 // ---------------------
@@ -13,7 +16,8 @@
 //   Contact, Requirement, PossibleDuplicate, Project, Unit,
 //   LeadSource, Campaign, Enquiry, Lead, AssignmentRule, RoundRobinState,
 //   IdempotencyKey, Deal, AuditLog, SiteVisit, Reservation, Booking,
-//   PaymentPlan, PaymentObligation, PaymentRecord
+//   PaymentPlan, PaymentObligation, PaymentRecord, Document,
+//   Activity, Task
 //
 // Tenant scoping is enforced centrally via server/src/lib/prisma.js and
 // server/src/lib/tenant.js — see those files for the fail-closed extension.
@@ -192,6 +196,8 @@ model Organization {
   paymentObligations PaymentObligation[]
   paymentRecords      PaymentRecord[]
   documents           Document[]
+  activities          Activity[]
+  tasks               Task[]
 
   @@map("organizations")
 }
@@ -304,6 +310,8 @@ model Contact {
   deals     Deal[]
   siteVisits SiteVisit[]
   documents Document[]
+  activities Activity[]
+  relatedTasks Task[]
 
   // Deterministic duplicate protection: same org + same normalized email + same normalized phone (both non-null) is considered same identity
   @@unique([organizationId, normalizedEmail, normalizedPhone])
@@ -478,6 +486,7 @@ model Lead {
   linkedEnquiries Enquiry[]     @relation("EnquiryLinkedLead")
   assignedAgent  User?          @relation("LeadAssignee", fields: [assignedAgentId], references: [id], onDelete: SetNull, onUpdate: Cascade)
   deals          Deal[]
+  activities     Activity[]
 
   // NOTE: the "one OPEN Lead per Org+Contact+Project" invariant is enforced
   // by a partial unique index in the migration (not expressible in Prisma):
@@ -628,6 +637,7 @@ model User {
   refreshTokens RefreshToken[]
   assignedLeads Lead[]          @relation("LeadAssignee")
   siteVisits    SiteVisit[]     @relation("SiteVisitAgent")
+  assignedTasks Task[]
 
   // Tenant-scoped unique: same email can exist in different organizations,
   // but not twice within one organization.
@@ -716,6 +726,8 @@ model Deal {
   bookings     Booking[]
   paymentPlans PaymentPlan[]
   documents    Document[]
+  activities   Activity[]
+  relatedTasks Task[]
 
   @@index([organizationId])
   @@index([organizationId, stage])
@@ -991,4 +1003,70 @@ model Document {
   @@index([contactId])
   @@index([dealId])
   @@map("documents")
+}
+
+// ---------------------------------------------------------------------------
+// TENANT-SCOPED — Activity & Task (Checkpoint 14)
+// Activity = what happened (immutable log, no deletedAt, no update/delete
+// endpoints). Task = what needs to happen (OPEN/DONE stored; OVERDUE derived
+// at read, never written; deletedAt exists for Tier-2 retention but no
+// delete endpoint in V1). No auto-completion, no rules engine, no Unit link
+// (dealId suffices — the Deal carries the Unit reference).
+// ---------------------------------------------------------------------------
+
+enum TaskStatus {
+  OPEN
+  DONE
+}
+
+model Activity {
+  id             String   @id @default(uuid())
+  organizationId String
+  contactId      String
+  leadId         String?
+  dealId         String?
+  type           String
+  outcome        String?
+  notes          String?  @db.Text
+  createdBy      String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  contact      Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  lead         Lead?        @relation(fields: [leadId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  deal         Deal?        @relation(fields: [dealId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+
+  @@index([organizationId])
+  @@index([organizationId, contactId])
+  @@index([organizationId, dealId])
+  @@index([contactId])
+  @@map("activities")
+}
+
+model Task {
+  id               String     @id @default(uuid())
+  organizationId   String
+  assignedTo       String
+  relatedContactId String?
+  relatedDealId    String?
+  title            String
+  dueAt            DateTime
+  status           TaskStatus @default(OPEN)
+  createdBy        String
+  deletedAt        DateTime?
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  assignee     User         @relation(fields: [assignedTo], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  relatedContact Contact?   @relation(fields: [relatedContactId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  relatedDeal  Deal?        @relation(fields: [relatedDealId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+
+  @@index([organizationId])
+  @@index([organizationId, assignedTo])
+  @@index([organizationId, status])
+  @@index([organizationId, dueAt])
+  @@index([deletedAt])
+  @@map("tasks")
 }

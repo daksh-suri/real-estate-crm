@@ -415,6 +415,78 @@ function withDocumentExisting(existing, patch) {
   };
 }
 
+async function assertActivityIntegrity(organizationId, data, rawPrisma) {
+  if (data.contactId) {
+    const contact = await assertSameOrgReference(rawPrisma, 'contact', data.contactId, organizationId, 'Activity contactId');
+    if (contact.deletedAt) {
+      throw new CrossTenantError(`Activity cannot be attached to soft-deleted contact ${data.contactId}`);
+    }
+  }
+  if (data.leadId) {
+    const lead = await assertSameOrgReference(rawPrisma, 'lead', data.leadId, organizationId, 'Activity leadId');
+    if (lead.deletedAt) {
+      throw new CrossTenantError(`Activity cannot be attached to soft-deleted lead ${data.leadId}`);
+    }
+    if (data.contactId && lead.contactId !== data.contactId) {
+      throw new CrossTenantError(
+        `Activity lead ${data.leadId} belongs to contact ${lead.contactId}, not ${data.contactId}`
+      );
+    }
+  }
+  if (data.dealId) {
+    const deal = await assertSameOrgReference(rawPrisma, 'deal', data.dealId, organizationId, 'Activity dealId');
+    if (deal.deletedAt) {
+      throw new CrossTenantError(`Activity cannot be attached to soft-deleted deal ${data.dealId}`);
+    }
+    if (data.contactId && deal.contactId !== data.contactId) {
+      throw new CrossTenantError(
+        `Activity deal ${data.dealId} belongs to contact ${deal.contactId}, not ${data.contactId}`
+      );
+    }
+  }
+}
+
+async function assertTaskIntegrity(organizationId, data, rawPrisma) {
+  if (data.assignedTo) {
+    await assertSameOrgReference(rawPrisma, 'user', data.assignedTo, organizationId, 'Task assignedTo');
+  }
+  if (data.relatedContactId) {
+    const contact = await assertSameOrgReference(rawPrisma, 'contact', data.relatedContactId, organizationId, 'Task relatedContactId');
+    if (contact.deletedAt) {
+      throw new CrossTenantError(`Task cannot be attached to soft-deleted contact ${data.relatedContactId}`);
+    }
+  }
+  if (data.relatedDealId) {
+    const deal = await assertSameOrgReference(rawPrisma, 'deal', data.relatedDealId, organizationId, 'Task relatedDealId');
+    if (deal.deletedAt) {
+      throw new CrossTenantError(`Task cannot be attached to soft-deleted deal ${data.relatedDealId}`);
+    }
+    if (data.relatedContactId && deal.contactId !== data.relatedContactId) {
+      throw new CrossTenantError(
+        `Task deal ${data.relatedDealId} belongs to contact ${deal.contactId}, not ${data.relatedContactId}`
+      );
+    }
+  }
+}
+
+function withActivityExisting(existing, patch) {
+  return {
+    contactId: existing.contactId,
+    leadId: existing.leadId,
+    dealId: existing.dealId,
+    ...patch,
+  };
+}
+
+function withTaskExisting(existing, patch) {
+  return {
+    assignedTo: existing.assignedTo,
+    relatedContactId: existing.relatedContactId,
+    relatedDealId: existing.relatedDealId,
+    ...patch,
+  };
+}
+
 function withPaymentObligationExisting(existing, patch) {
   return { paymentPlanId: existing.paymentPlanId, ...patch };
 }
@@ -480,7 +552,7 @@ function wrapModel(modelName, rawModel, organizationId, guardClient) {
       assertTenantContext(organizationId);
       const where = injectWhere(args.where, organizationId);
       // Soft-delete: exclude deletedAt not null for User, Team, Contact, Requirement unless explicitly queried
-      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit', 'lead', 'deal'].includes(modelName)) && where.deletedAt === undefined) {
+      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit', 'lead', 'deal', 'task'].includes(modelName)) && where.deletedAt === undefined) {
         where.deletedAt = null;
       }
       return rawModel.findMany({ ...args, where });
@@ -489,7 +561,7 @@ function wrapModel(modelName, rawModel, organizationId, guardClient) {
     findFirst: async (args = {}) => {
       assertTenantContext(organizationId);
       const where = injectWhere(args.where, organizationId);
-      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit', 'lead', 'deal'].includes(modelName)) && where.deletedAt === undefined) {
+      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit', 'lead', 'deal', 'task'].includes(modelName)) && where.deletedAt === undefined) {
         where.deletedAt = null;
       }
       return rawModel.findFirst({ ...args, where });
@@ -498,7 +570,7 @@ function wrapModel(modelName, rawModel, organizationId, guardClient) {
     findFirstOrThrow: async (args = {}) => {
       assertTenantContext(organizationId);
       const where = injectWhere(args.where, organizationId);
-      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit', 'lead', 'deal'].includes(modelName)) && where.deletedAt === undefined) {
+      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit', 'lead', 'deal', 'task'].includes(modelName)) && where.deletedAt === undefined) {
         where.deletedAt = null;
       }
       return rawModel.findFirstOrThrow({ ...args, where });
@@ -513,7 +585,7 @@ function wrapModel(modelName, rawModel, organizationId, guardClient) {
       if (!where) throw new TenantContextError('findUnique requires where');
       assertWhereTenantMatches(where, organizationId);
       const tenantWhere = injectWhere(where, organizationId);
-      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit', 'lead', 'deal'].includes(modelName)) && tenantWhere.deletedAt === undefined) {
+      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit', 'lead', 'deal', 'task'].includes(modelName)) && tenantWhere.deletedAt === undefined) {
         tenantWhere.deletedAt = null;
       }
       // Use findFirst with tenant filter — valid for any where shape.
@@ -526,7 +598,7 @@ function wrapModel(modelName, rawModel, organizationId, guardClient) {
       if (!where) throw new TenantContextError('findUniqueOrThrow requires where');
       assertWhereTenantMatches(where, organizationId);
       const tenantWhere = injectWhere(where, organizationId);
-      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit', 'lead', 'deal'].includes(modelName)) && tenantWhere.deletedAt === undefined) {
+      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit', 'lead', 'deal', 'task'].includes(modelName)) && tenantWhere.deletedAt === undefined) {
         tenantWhere.deletedAt = null;
       }
       return rawModel.findFirstOrThrow({ ...args, where: tenantWhere });
@@ -535,7 +607,7 @@ function wrapModel(modelName, rawModel, organizationId, guardClient) {
     count: async (args = {}) => {
       assertTenantContext(organizationId);
       const where = injectWhere(args.where, organizationId);
-      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit', 'lead', 'deal'].includes(modelName)) && where.deletedAt === undefined) {
+      if ((['user', 'team', 'contact', 'requirement', 'project', 'unit', 'lead', 'deal', 'task'].includes(modelName)) && where.deletedAt === undefined) {
         where.deletedAt = null;
       }
       return rawModel.count({ ...args, where });
@@ -617,6 +689,12 @@ function wrapModel(modelName, rawModel, organizationId, guardClient) {
       }
       if (modelName === 'document') {
         await assertDocumentIntegrity(organizationId, data, guards);
+      }
+      if (modelName === 'activity') {
+        await assertActivityIntegrity(organizationId, data, guards);
+      }
+      if (modelName === 'task') {
+        await assertTaskIntegrity(organizationId, data, guards);
       }
 
       return rawModel.create({ ...args, data });
@@ -717,6 +795,12 @@ function wrapModel(modelName, rawModel, organizationId, guardClient) {
       if (modelName === 'document' && args.data) {
         await assertDocumentIntegrity(organizationId, withDocumentExisting(existing, args.data), guards);
       }
+      if (modelName === 'activity' && args.data) {
+        await assertActivityIntegrity(organizationId, withActivityExisting(existing, args.data), guards);
+      }
+      if (modelName === 'task' && args.data) {
+        await assertTaskIntegrity(organizationId, withTaskExisting(existing, args.data), guards);
+      }
 
       // Perform update using the record's PK (id) which is globally unique and valid.
       // This avoids generating an invalid where: { id, organizationId } for Prisma update.
@@ -810,6 +894,12 @@ function wrapModel(modelName, rawModel, organizationId, guardClient) {
         if (modelName === 'document' && args.update) {
           await assertDocumentIntegrity(organizationId, withDocumentExisting(existing, args.update), guards);
         }
+        if (modelName === 'activity' && args.update) {
+          await assertActivityIntegrity(organizationId, withActivityExisting(existing, args.update), guards);
+        }
+        if (modelName === 'task' && args.update) {
+          await assertTaskIntegrity(organizationId, withTaskExisting(existing, args.update), guards);
+        }
         const whereForUpdate = { id: existing.id };
         return rawModel.update({ where: whereForUpdate, data: args.update });
       }
@@ -867,6 +957,12 @@ function wrapModel(modelName, rawModel, organizationId, guardClient) {
       }
       if (modelName === 'document') {
         await assertDocumentIntegrity(organizationId, create, guards);
+      }
+      if (modelName === 'activity') {
+        await assertActivityIntegrity(organizationId, create, guards);
+      }
+      if (modelName === 'task') {
+        await assertTaskIntegrity(organizationId, create, guards);
       }
       return rawModel.create({ data: create });
     },
@@ -935,6 +1031,8 @@ function createTenantPrisma(organizationId) {
     paymentObligation: wrapModel('paymentObligation', prisma.paymentObligation, organizationId),
     paymentRecord: wrapModel('paymentRecord', prisma.paymentRecord, organizationId),
     document: wrapModel('document', prisma.document, organizationId),
+    activity: wrapModel('activity', prisma.activity, organizationId),
+    task: wrapModel('task', prisma.task, organizationId),
 
     // Preserve raw access for advanced needs, but clearly marked as unscoped
     _raw: prisma,
@@ -987,6 +1085,8 @@ function createTenantPrisma(organizationId) {
             paymentObligation: txWrap('paymentObligation', rawTx.paymentObligation),
             paymentRecord: txWrap('paymentRecord', rawTx.paymentRecord),
             document: txWrap('document', rawTx.document),
+            activity: txWrap('activity', rawTx.activity),
+            task: txWrap('task', rawTx.task),
             _raw: rawTx,
             _organizationId: organizationId,
           };

@@ -405,6 +405,19 @@ async function mergeContacts({ tenantPrisma, organizationId, survivorId, duplica
         where: { contactId: duplicateId, organizationId },
         data: { contactId: survivorId },
       });
+
+      // Activities: immutable log rows move verbatim (no link fields exist).
+      await tx.activity.updateMany({
+        where: { contactId: duplicateId, organizationId },
+        data: { contactId: survivorId },
+      });
+
+      // Documents: version groups move whole — groupId/supersedesId/version
+      // untouched, so history chains stay intact under the survivor.
+      await tx.document.updateMany({
+        where: { contactId: duplicateId, organizationId },
+        data: { contactId: survivorId },
+      });
       // Soft delete duplicate, store merge metadata in consentSource? For V1, use deletedAt + notes
       const mergedDuplicate = await tx.contact.update({
         where: { id: duplicateId },
