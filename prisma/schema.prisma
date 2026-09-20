@@ -1,14 +1,5 @@
 // Prisma schema for Real Estate CRM
-// Primary Source of Truth: docs/CRM_Implementation_Blueprint_Phase3.md
-// Checkpoint 11 — Booking (Booking; Reservation ACTIVE → CONVERTED,
-// Unit RESERVED → BOOKED, one booking per reservation)
-// Checkpoint 12 — Payments (PaymentPlan/Obligation/Record; deal-specific
-// installment schedules, correction-only records, idempotency webhook)
-// Checkpoint 13 — Documents (Document; row-per-version, SigV4 boundary)
-// Checkpoint 14 — Activity & Task (immutable log + OPEN/DONE work items,
-// OVERDUE derived, no auto-completion, no rules engine)
-// Checkpoint 15 — Background jobs (OutboxEvent, named worker, expiry sweep,
-// notification lanes; no Redis/queues)
+// Source of truth: docs/CRM_ENGINEERING_CONTEXT.md
 //
 // TENANT CLASSIFICATION
 // ---------------------
@@ -1086,6 +1077,7 @@ model Task {
 
 enum OutboxStatus {
   PENDING
+  PROCESSING
   PROCESSED
   FAILED
 }
@@ -1098,6 +1090,10 @@ model OutboxEvent {
   status         OutboxStatus @default(PENDING)
   attempts       Int          @default(0)
   availableAt    DateTime     @default(now())
+  // Set at claim time while status = PROCESSING; NULL otherwise. A PROCESSING
+  // row whose claimedAt ages past the worker claim lease is reclaimable
+  // (crashed-worker recovery) — no sweeper, the claim query covers it.
+  claimedAt      DateTime?
   processedAt    DateTime?
   failedAt       DateTime?
   lastError      String?      @db.Text
@@ -1108,6 +1104,7 @@ model OutboxEvent {
 
   @@index([organizationId])
   @@index([status, availableAt])
+  @@index([status, claimedAt])
   @@map("outbox_events")
 }
 

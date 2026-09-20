@@ -56,3 +56,7 @@ jobs:
 
       - name: Build frontend
         run: npm run build
+        env:
+          # CI only validates compilation; the client fails closed without an
+          # explicit API URL in production builds, so one is provided here.
+          VITE_API_URL: http://localhost:5000

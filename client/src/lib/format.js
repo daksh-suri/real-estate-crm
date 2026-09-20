@@ -36,3 +36,21 @@ export function formatMoney(amount, currency = '₹') {
   if (Number.isNaN(n)) return String(amount);
   return `${currency}${n.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
 }
+
+// datetime-local input helpers. toInputValue renders a Date/ISO string as
+// the local "YYYY-MM-DDTHH:mm" the input needs; fromInputValue parses it
+// back to an ISO string for the API. Empty/invalid round-trips to null.
+export function toInputValue(value) {
+  if (!value) return '';
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+export function fromInputValue(value) {
+  if (!value) return null;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+}

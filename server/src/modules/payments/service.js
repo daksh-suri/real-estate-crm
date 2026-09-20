@@ -131,8 +131,8 @@ async function createPlan({ tenantPrisma, organizationId, idempotencyKey, input 
 }
 
 // ---------------------------------------------------------------------------
-// Webhook (provider-neutral, unauthenticated by necessity — no gateway or
-// secret exists in V1; signing deferred, see DEC-029). The gateway eventId
+// Webhook (provider-neutral, HMAC-authenticated at the controller boundary —
+// see lib/webhookAuth and DEC-029). The gateway eventId
 // is the idempotency key; the tenant is derived from the obligation row,
 // never trusted from the body. Record + obligation transition are atomic.
 // ---------------------------------------------------------------------------

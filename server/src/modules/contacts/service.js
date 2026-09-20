@@ -436,6 +436,15 @@ async function mergeContacts({ tenantPrisma, organizationId, actorId, survivorId
           data: { contactId: survivorId },
         })
       ).count;
+      // Tasks: reference links (not owned rows) move like deal/visit links so
+      // active work items never point at the archived duplicate. Assignee,
+      // status, and due dates are untouched.
+      moved.task = (
+        await tx.task.updateMany({
+          where: { relatedContactId: duplicateId, organizationId },
+          data: { relatedContactId: survivorId },
+        })
+      ).count;
       // Soft delete duplicate, store merge metadata in consentSource? For V1, use deletedAt + notes
       const mergedDuplicate = await tx.contact.update({
         where: { id: duplicateId },

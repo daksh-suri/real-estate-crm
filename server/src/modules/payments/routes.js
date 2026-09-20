@@ -22,9 +22,10 @@ planRouter.get('/:planId', authorize('paymentPlan', 'read'), controller.getPlan)
 obligationRouter.get('/:obligationId', authorize('paymentObligation', 'read'), controller.getObligation);
 recordRouter.get('/:recordId', authorize('paymentRecord', 'read'), controller.getRecord);
 
-// External gateway boundary: unauthenticated by necessity (no gateway or
-// secret exists in V1). Tenant is derived from the obligation row, the
-// gateway eventId is the dedup identity. Signing deferred (see DEC-029).
+// External gateway boundary: unauthenticated by session (no gateway login
+// exists) but authenticated by the V1 HMAC signature (see lib/webhookAuth).
+// Tenant is derived from the obligation row, the gateway eventId is the
+// dedup identity.
 webhookRouter.post('/payment-gateway', controller.webhook);
 
 module.exports = { planRouter, obligationRouter, recordRouter, webhookRouter };

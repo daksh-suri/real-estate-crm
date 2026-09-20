@@ -30,6 +30,7 @@ describe('Checkpoint 16 — Audit Trail consolidation', () => {
     ['deal', 'create'],
     ['deal', 'read'],
     ['deal', 'transition'],
+    ['task', 'create'],
   ];
 
   let orgA, orgB;
@@ -42,6 +43,8 @@ describe('Checkpoint 16 — Audit Trail consolidation', () => {
     await prisma.refreshToken.deleteMany({});
     await prisma.auditLog.deleteMany({});
     await prisma.idempotencyKey.deleteMany({});
+    await prisma.task.deleteMany({});
+    await prisma.activity.deleteMany({});
     await prisma.deal.deleteMany({});
     await prisma.lead.deleteMany({});
     await prisma.enquiry.deleteMany({});
@@ -66,6 +69,8 @@ describe('Checkpoint 16 — Audit Trail consolidation', () => {
   async function wipeDomain() {
     await prisma.auditLog.deleteMany({});
     await prisma.idempotencyKey.deleteMany({});
+    await prisma.task.deleteMany({});
+    await prisma.activity.deleteMany({});
     await prisma.deal.deleteMany({});
     await prisma.lead.deleteMany({});
     await prisma.enquiry.deleteMany({});
@@ -142,6 +147,20 @@ describe('Checkpoint 16 — Audit Trail consolidation', () => {
     return res.body.lead;
   }
 
+  async function makeTask(token, assigneeId, relatedContactId) {
+    const res = await request(app)
+      .post('/tasks')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        assignedTo: assigneeId,
+        title: 'Follow up on site visit',
+        dueAt: new Date(Date.now() + 86400000).toISOString(),
+        relatedContactId,
+      });
+    expect(res.status).toBe(201);
+    return res.body;
+  }
+
   async function auditRows(where) {
     return prisma.auditLog.findMany({ where, orderBy: { createdAt: 'asc' } });
   }
@@ -192,8 +211,7 @@ describe('Checkpoint 16 — Audit Trail consolidation', () => {
       expect(rows).toHaveLength(0);
     });
 
-    test('cross-tenant merge is rejected and writes no audit row', async () => {
-      const tokenA = await login(userAdminA.email, plainAdminA, orgA.id);
+    test('cross-tenant merge is rejected and writes no audit row', async () => {      const tokenA = await login(userAdminA.email, plainAdminA, orgA.id);
       const tokenB = await login(userAdminB.email, plainAdminB, orgB.id);
       const contactA = await makeContact(tokenA);
       const contactB = await makeContact(tokenB);
@@ -223,6 +241,58 @@ describe('Checkpoint 16 — Audit Trail consolidation', () => {
       const rows = await auditRows({ organizationId: orgA.id, entityType: 'Contact', entityId: duplicate.id });
       expect(rows).toHaveLength(1);
       expect(rows[0].action).toBe('contact.merge');
+    });
+
+    test('merge reassigns tasks to the survivor, unchanged otherwise, counted in audit', async () => {
+      const token = await login(userAdminA.email, plainAdminA, orgA.id);
+      const survivor = await makeContact(token);
+      const duplicate = await makeContact(token);
+      const before = await makeTask(token, userAdminA.id, duplicate.id);
+
+      const res = await request(app)
+        .post(`/contacts/${duplicate.id}/merge`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ targetId: survivor.id });
+      expect(res.status).toBe(200);
+
+      const after = await prisma.task.findFirst({ where: { id: before.id } });
+      expect(after.relatedContactId).toBe(survivor.id);
+      expect(after.status).toBe(before.status);
+      expect(after.title).toBe(before.title);
+      expect(after.assignedTo).toBe(before.assignedTo);
+      expect(new Date(after.dueAt).getTime()).toBe(new Date(before.dueAt).getTime());
+
+      const rows = await auditRows({ organizationId: orgA.id, entityType: 'Contact', entityId: duplicate.id });
+      expect(rows).toHaveLength(1);
+      expect(rows[0].afterState.moved.task).toBe(1);
+    });
+
+    test('failed merge moves no tasks; cross-org tasks untouched', async () => {
+      const tokenA = await login(userAdminA.email, plainAdminA, orgA.id);
+      const tokenB = await login(userAdminB.email, plainAdminB, orgB.id);
+      const survivor = await makeContact(tokenA);
+      const duplicate = await makeContact(tokenA);
+      const taskA = await makeTask(tokenA, userAdminA.id, duplicate.id);
+      const contactB = await makeContact(tokenB);
+      const taskB = await makeTask(tokenB, userAdminB.id, contactB.id);
+
+      // Failed merge (self-merge) rolls back everything including tasks.
+      const bad = await request(app)
+        .post(`/contacts/${duplicate.id}/merge`)
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send({ targetId: duplicate.id });
+      expect(bad.status).toBe(400);
+      expect((await prisma.task.findFirst({ where: { id: taskA.id } })).relatedContactId).toBe(duplicate.id);
+      expect(await auditRows({ organizationId: orgA.id, entityType: 'Contact', entityId: duplicate.id })).toHaveLength(0);
+
+      // Successful org-A merge cannot touch org-B tasks.
+      const ok = await request(app)
+        .post(`/contacts/${duplicate.id}/merge`)
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send({ targetId: survivor.id });
+      expect(ok.status).toBe(200);
+      expect((await prisma.task.findFirst({ where: { id: taskB.id } })).relatedContactId).toBe(contactB.id);
+      expect((await prisma.task.findFirst({ where: { id: taskA.id } })).relatedContactId).toBe(survivor.id);
     });
   });
 

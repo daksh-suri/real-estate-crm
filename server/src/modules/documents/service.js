@@ -2,7 +2,7 @@ const { randomUUID } = require('crypto');
 const { idempotentCreate, recordIdempotency } = require('../../lib/idempotency');
 const { notFoundError, badRequestError, conflictError } = require('../../lib/httpError');
 const { resolveRef } = require('../../lib/refs');
-const { createUploadUrl, createAccessUrl, storageKeyFor } = require('../../lib/storage');
+const { createUploadUrl, createAccessUrl, storageKeyFor, objectExists } = require('../../lib/storage');
 
 const OPERATION_DOCUMENT_CREATE = 'DOCUMENT_CREATE';
 const OPERATION_RESUBMIT = 'DOCUMENT_RESUBMIT';
@@ -164,6 +164,19 @@ async function lockedTransition({ tenantPrisma, organizationId, documentId, from
 }
 
 async function completeUpload({ tenantPrisma, organizationId, documentId }) {
+  // Prove the bytes exist BEFORE the locked transition: the check runs
+  // outside any transaction (no lock held across network I/O). The residual
+  // check-to-commit window is accepted and documented — the transition
+  // itself still re-validates state under the row lock.
+  const draft = await tenantPrisma.document.findUnique({ where: { id: documentId } });
+  if (!draft) throw notFoundError('Document not found');
+  if (draft.status !== 'NOT_SUBMITTED' && draft.status !== 'RESUBMITTED') {
+    throw badRequestError(`Only NOT_SUBMITTED or RESUBMITTED documents can be completed (current: ${draft.status})`);
+  }
+  const exists = await objectExists({ storageKey: draft.storageKey });
+  if (!exists) {
+    throw badRequestError('No uploaded file found for this document yet');
+  }
   return lockedTransition({
     tenantPrisma, organizationId, documentId,
     from: ['NOT_SUBMITTED', 'RESUBMITTED'], to: 'SUBMITTED',

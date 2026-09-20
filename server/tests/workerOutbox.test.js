@@ -232,21 +232,29 @@ describe('Checkpoint 15 — Background Jobs & Outbox', () => {
       expect(computeBackoff(100)).toBe(3600000);
     });
 
-    test('crash before PROCESSED leaves the event retryable', async () => {
+    test('crash before PROCESSED holds a lease; recovery reclaims after expiry', async () => {
       const tenantA = createTenantPrisma(orgA.id);
       const created = await tenantA.outboxEvent.create({
         data: { organizationId: orgA.id, eventType: EVENT_TYPES.NOTIFICATION_INTERNAL, payload: { lane: 'internal', subject: 's', body: 'b' } },
       });
-      // Simulate the crash window: claimed (attempts bumped) but never marked.
+      // Simulate the crash window: claimed (PROCESSING lease) but never marked.
       const claimed = await claimOutboxEvents(prisma, { now: new Date() });
       expect(claimed.length).toBe(1);
       expect(claimed[0].id).toBe(created.id);
-      const row = await prisma.outboxEvent.findFirst({ where: { id: created.id } });
-      expect(row.status).toBe('PENDING');
-      // Next run still picks it up and finishes it.
+      let row = await prisma.outboxEvent.findFirst({ where: { id: created.id } });
+      expect(row.status).toBe('PROCESSING');
+      expect(row.attempts).toBe(1);
+      expect(row.claimedAt).not.toBeNull();
+      // While the lease is fresh, no other worker can claim it.
+      expect((await processOutboxBatch({ client: prisma })).claimed).toBe(0);
+      // After the lease expires it is reclaimable and finishes exactly once.
+      await prisma.outboxEvent.update({ where: { id: created.id }, data: { claimedAt: new Date(Date.now() - 600000) } });
       const out = await processOutboxBatch({ client: prisma });
       expect(out.processed).toBe(1);
-      expect((await prisma.outboxEvent.findFirst({ where: { id: created.id } })).status).toBe('PROCESSED');
+      row = await prisma.outboxEvent.findFirst({ where: { id: created.id } });
+      expect(row.status).toBe('PROCESSED');
+      expect(row.attempts).toBe(2);
+      expect(sent.length).toBe(1);
     });
 
     test('concurrent workers do not double-process', async () => {
@@ -266,6 +274,97 @@ describe('Checkpoint 15 — Background Jobs & Outbox', () => {
       await expect(
         prisma.$transaction((tx) => enqueueOutbox(tx, { organizationId: orgA.id, eventType: 'NOPE', payload: {} }))
       ).rejects.toThrow(/Unknown outbox event type/);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe('Claim lease (corrective pass)', () => {
+    test('second claim during dispatch in flight gets nothing; attempts consumed once', async () => {
+      const tenantA = createTenantPrisma(orgA.id);
+      const created = await tenantA.outboxEvent.create({
+        data: { organizationId: orgA.id, eventType: EVENT_TYPES.NOTIFICATION_INTERNAL, payload: { lane: 'internal', subject: 's', body: 'b' } },
+      });
+      const first = await claimOutboxEvents(prisma, { now: new Date() });
+      expect(first.length).toBe(1);
+      const second = await claimOutboxEvents(prisma, { now: new Date() });
+      expect(second.length).toBe(0);
+      const row = await prisma.outboxEvent.findFirst({ where: { id: created.id } });
+      expect(row.status).toBe('PROCESSING');
+      expect(row.attempts).toBe(1);
+    });
+
+    test('stale owner terminal write cannot clobber the new outcome', async () => {
+      const tenantA = createTenantPrisma(orgA.id);
+      const created = await tenantA.outboxEvent.create({
+        data: { organizationId: orgA.id, eventType: EVENT_TYPES.NOTIFICATION_INTERNAL, payload: { lane: 'internal', subject: 's', body: 'b' } },
+      });
+      // Slow worker A dispatches while another owner resolves the row first.
+      const stealingDispatch = async (event) => {
+        await prisma.outboxEvent.update({ where: { id: event.id }, data: { status: 'FAILED', failedAt: new Date(), lastError: 'owner B resolved' } });
+        sent.push({ eventId: event.id });
+        return { delivered: true };
+      };
+      const out = await processOutboxBatch({ client: prisma, dispatch: stealingDispatch });
+      expect(out.stale).toBe(1);
+      expect(out.processed).toBe(0);
+      const row = await prisma.outboxEvent.findFirst({ where: { id: created.id } });
+      expect(row.status).toBe('FAILED');
+      expect(row.lastError).toBe('owner B resolved');
+    });
+
+    test('late resolve after PROCESSING lease reclaim cannot clobber the new owner', async () => {
+      const tenantA = createTenantPrisma(orgA.id);
+      const created = await tenantA.outboxEvent.create({
+        data: { organizationId: orgA.id, eventType: EVENT_TYPES.NOTIFICATION_INTERNAL, payload: { lane: 'internal', subject: 's', body: 'b' } },
+      });
+      // Slow worker A dispatches while its lease expires and worker B
+      // reclaims the same still-PROCESSING row with a newer claimedAt.
+      const slowDispatch = async (event) => {
+        await prisma.outboxEvent.update({
+          where: { id: event.id },
+          data: { claimedAt: new Date(Date.now() - 600000) },
+        });
+        const reclaimed = await claimOutboxEvents(prisma, { now: new Date() });
+        expect(reclaimed.length).toBe(1);
+        expect(reclaimed[0].id).toBe(event.id);
+        sent.push({ eventId: event.id });
+        return { delivered: true };
+      };
+      const out = await processOutboxBatch({ client: prisma, dispatch: slowDispatch });
+      // A's resolve pins its stale claimedAt: 0 rows, counted stale.
+      expect(out).toMatchObject({ claimed: 1, stale: 1, processed: 0 });
+      const row = await prisma.outboxEvent.findFirst({ where: { id: created.id } });
+      // B's claim is intact — still PROCESSING, never clobbered to PROCESSED.
+      expect(row.status).toBe('PROCESSING');
+      expect(row.claimedAt).not.toBeNull();
+      expect(row.attempts).toBe(2);
+      // B can still resolve normally with its own lease.
+      const ok = await prisma.outboxEvent.updateMany({
+        where: { id: created.id, status: 'PROCESSING', claimedAt: row.claimedAt },
+        data: { status: 'PROCESSED', processedAt: new Date(), claimedAt: null },
+      });
+      expect(ok.count).toBe(1);
+    });
+
+    test('retryable failure returns to PENDING with a future window and keeps attempts', async () => {
+      const tenantA = createTenantPrisma(orgA.id);
+      const created = await tenantA.outboxEvent.create({
+        data: { organizationId: orgA.id, eventType: 'NOPE_UNKNOWN', payload: {} },
+      });
+      const failing = async () => {
+        throw new Error('downstream down');
+      };
+      expect(await processOutboxBatch({ client: prisma, dispatch: failing })).toMatchObject({ claimed: 1, retried: 1, stale: 0 });
+      let row = await prisma.outboxEvent.findFirst({ where: { id: created.id } });
+      expect(row.status).toBe('PENDING');
+      expect(row.attempts).toBe(1);
+      expect(new Date(row.availableAt).getTime()).toBeGreaterThan(Date.now());
+      // Second failure is a second attempt, still retryable.
+      await prisma.outboxEvent.update({ where: { id: created.id }, data: { availableAt: new Date(Date.now() - 1000) } });
+      expect(await processOutboxBatch({ client: prisma, dispatch: failing })).toMatchObject({ claimed: 1, retried: 1 });
+      row = await prisma.outboxEvent.findFirst({ where: { id: created.id } });
+      expect(row.attempts).toBe(2);
+      expect(row.status).toBe('PENDING');
     });
   });
 

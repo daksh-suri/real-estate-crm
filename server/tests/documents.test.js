@@ -21,6 +21,9 @@ function identity(tag) {
 const fakeStorage = {
   createUploadUrl: ({ storageKey }) => ({ url: `https://fake-storage/upload/${storageKey}`, expiresInSeconds: 86400, storageKey }),
   createAccessUrl: ({ storageKey }) => ({ url: `https://fake-storage/access/${storageKey}`, expiresInSeconds: 86400, storageKey }),
+  // Existence gate for completeUpload: present by default so pre-existing
+  // flows behave; individual tests swap the provider to prove the gate.
+  objectExists: async () => true,
 };
 
 describe('Checkpoint 13 — Documents', () => {
@@ -211,6 +214,70 @@ describe('Checkpoint 13 — Documents', () => {
   }
 
   // -------------------------------------------------------------------------
+  describe('Upload completion proves object existence (corrective pass)', () => {
+    test('existing object → completion succeeds', async () => {
+      const token = await login(userAdminA.email, plainAdminA, orgA.id);
+      const contact = await makeContact(token, 'exists');
+      const doc = (await makeDoc(token, contact.id)).body.document;
+      const res = await request(app).post(`/documents/${doc.id}/complete`).set('Authorization', `Bearer ${token}`);
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('SUBMITTED');
+    });
+
+    test('missing object → 400 and document stays NOT_SUBMITTED', async () => {
+      setStorageProvider({ ...fakeStorage, objectExists: async () => false });
+      try {
+        const token = await login(userAdminA.email, plainAdminA, orgA.id);
+        const contact = await makeContact(token, 'missing');
+        const doc = (await makeDoc(token, contact.id)).body.document;
+        const res = await request(app).post(`/documents/${doc.id}/complete`).set('Authorization', `Bearer ${token}`);
+        expect(res.status).toBe(400);
+        expect((await prisma.document.findFirst({ where: { id: doc.id } })).status).toBe('NOT_SUBMITTED');
+      } finally {
+        setStorageProvider(fakeStorage);
+      }
+    });
+
+    test('provider failure → 5xx and document unchanged', async () => {
+      setStorageProvider({ ...fakeStorage, objectExists: async () => { throw new Error('storage down'); } });
+      try {
+        const token = await login(userAdminA.email, plainAdminA, orgA.id);
+        const contact = await makeContact(token, 'down');
+        const doc = (await makeDoc(token, contact.id)).body.document;
+        const res = await request(app).post(`/documents/${doc.id}/complete`).set('Authorization', `Bearer ${token}`);
+        expect(res.status).toBe(500);
+        expect((await prisma.document.findFirst({ where: { id: doc.id } })).status).toBe('NOT_SUBMITTED');
+      } finally {
+        setStorageProvider(fakeStorage);
+      }
+    });
+
+    test('unconfigured storage → 503 and document unchanged', async () => {
+      setStorageProvider(null);
+      try {
+        const token = await login(userAdminA.email, plainAdminA, orgA.id);
+        const contact = await makeContact(token, 'unconf');
+        const doc = (await makeDoc(token, contact.id)).body.document;
+        const res = await request(app).post(`/documents/${doc.id}/complete`).set('Authorization', `Bearer ${token}`);
+        expect(res.status).toBe(503);
+        expect((await prisma.document.findFirst({ where: { id: doc.id } })).status).toBe('NOT_SUBMITTED');
+      } finally {
+        setStorageProvider(fakeStorage);
+      }
+    });
+
+    test('cross-tenant completion still 404 with no state change', async () => {
+      const tokenA = await login(userAdminA.email, plainAdminA, orgA.id);
+      const tokenB = await login(userAdminB.email, plainAdminB, orgB.id);
+      const contactA = await makeContact(tokenA, 'xcomplete');
+      const doc = (await makeDoc(tokenA, contactA.id)).body.document;
+      const res = await request(app).post(`/documents/${doc.id}/complete`).set('Authorization', `Bearer ${tokenB}`);
+      expect(res.status).toBe(404);
+      expect((await prisma.document.findFirst({ where: { id: doc.id } })).status).toBe('NOT_SUBMITTED');
+    });
+  });
+
+  // -------------------------------------------------------------------------
   describe('Creation + reads', () => {
     test('creates v1 NOT_SUBMITTED with server-derived key; client key ignored', async () => {
       const token = await login(userAdminA.email, plainAdminA, orgA.id);
@@ -307,34 +374,35 @@ describe('Checkpoint 13 — Documents', () => {
       expect(res.body.error.message).not.toMatch(/key|secret|credential/i);
     });
 
-    test('SigV4 shape against dummy env (structure, scope, expiry)', async () => {
+    test('R2 presigned shape against dummy env (structure, scope, expiry)', async () => {
       const token = await login(userAdminA.email, plainAdminA, orgA.id);
-      const contact = await makeContact(token, 'sigv4');
+      const contact = await makeContact(token, 'r2shape');
       const doc = (await makeDoc(token, contact.id)).body.document;
       setStorageProvider(null);
-      process.env.STORAGE_ENDPOINT = 'https://s3.example.com';
-      process.env.STORAGE_BUCKET = 'crm-docs';
-      process.env.STORAGE_REGION = 'us-east-1';
-      process.env.STORAGE_ACCESS_KEY_ID = 'AKID';
-      process.env.STORAGE_SECRET_ACCESS_KEY = 'SECRET';
+      process.env.R2_ACCOUNT_ID = 'dummy-account';
+      process.env.R2_BUCKET_NAME = 'crm-docs';
+      process.env.R2_ACCESS_KEY_ID = 'AKID';
+      process.env.R2_SECRET_ACCESS_KEY = 'SECRET';
       try {
         const res = await request(app).post(`/documents/${doc.id}/upload-url`).set('Authorization', `Bearer ${token}`);
         expect(res.status).toBe(200);
-        expect(res.body.url).toMatch(/^https:\/\/s3\.example\.com\/crm-docs\//);
+        // R2 S3-compatible endpoint derived from the account id.
+        expect(res.body.url).toMatch(/^https:\/\/dummy-account\.r2\.cloudflarestorage\.com\/crm-docs\//);
         expect(res.body.url).toContain(encodeURIComponent(doc.storageKey).replace(/%2F/g, '/'));
+        // SDK SigV4 query-auth markers with the short 15-minute bearer TTL.
         expect(res.body.url).toContain('X-Amz-Algorithm=AWS4-HMAC-SHA256');
-        expect(res.body.url).toContain('X-Amz-Expires=86400');
+        expect(res.body.url).toContain('X-Amz-Expires=900');
         expect(res.body.url).toMatch(/X-Amz-Signature=[0-9a-f]{64}/);
         // Access key ID rides in the credential scope by SigV4 design; the
         // secret itself must never appear.
         expect(res.body.url).toContain('X-Amz-Credential=AKID');
         expect(res.body.url).not.toMatch(/SECRET/);
+        expect(res.body.expiresInSeconds).toBe(900);
       } finally {
-        delete process.env.STORAGE_ENDPOINT;
-        delete process.env.STORAGE_BUCKET;
-        delete process.env.STORAGE_REGION;
-        delete process.env.STORAGE_ACCESS_KEY_ID;
-        delete process.env.STORAGE_SECRET_ACCESS_KEY;
+        delete process.env.R2_ACCOUNT_ID;
+        delete process.env.R2_BUCKET_NAME;
+        delete process.env.R2_ACCESS_KEY_ID;
+        delete process.env.R2_SECRET_ACCESS_KEY;
         setStorageProvider(fakeStorage);
       }
     });

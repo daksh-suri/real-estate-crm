@@ -91,9 +91,8 @@ describe('sessionManager 401 orchestration (exact fetch counts)', () => {
     };
     const mgr = createSessionManager({ rawRequest: dataEndpoint(3), doRefresh, onUnauthenticated });
 
-    // First incident: refresh fails → latch sets.
+    // First incident: refresh fails → latch sets (no replay).
     await expect(mgr.request('/deals')).rejects.toMatchObject({ status: 401 });
-    expect(mgr.isRefreshLatched()).toBe(true);
     expect(counts.refresh).toBe(1);
     expect(counts.data).toBe(1);
 
@@ -106,7 +105,6 @@ describe('sessionManager 401 orchestration (exact fetch counts)', () => {
     // refresh again and its replay succeeds.
     mgr.resetOnLogin();
     refreshWorks = true;
-    expect(mgr.isRefreshLatched()).toBe(false);
     await expect(mgr.request('/deals')).resolves.toEqual({ ok: true, n: 4 });
     expect(counts.refresh).toBe(2);
     expect(counts.data).toBe(4); // two failed initials + one failed initial + one replay

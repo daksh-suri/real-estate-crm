@@ -10,25 +10,46 @@ import { createSessionManager } from './sessionManager';
 // - logout() is idempotent — concurrent 401 handlers may all call it.
 const AuthContext = createContext(null);
 
+// In-flight boot only — never a cached session. Concurrent mounts (notably
+// React StrictMode remounts in dev) share one refresh→me sequence so the
+// single-use refresh cookie is consumed exactly once. Cleared on settle so
+// every genuine boot performs a fresh refresh. No token/user/status lives
+// here, ever.
+let bootInflight = null;
+
+export function sharedBootSequence(run) {
+  if (!bootInflight) {
+    bootInflight = run().finally(() => {
+      bootInflight = null;
+    });
+  }
+  return bootInflight;
+}
+
+// One boot attempt: refresh, store the fresh token FIRST, then load /me so
+// it is sent with the fresh token (a stale/null token here 401s every boot
+// and logs the user out). Pure sequencing over injected callbacks —
+// unit-tested without a renderer.
+export async function restoreSession({ refresh, fetchMe, setToken }) {
+  const res = await refresh();
+  setToken(res.accessToken);
+  const me = await fetchMe();
+  return { token: res.accessToken, ...me };
+}
+
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [organization, setOrganization] = useState(null);
-  const [role, setRole] = useState(null);
-  const [teamIds, setTeamIds] = useState([]);
   const [permissions, setPermissions] = useState(null); // null = contract not yet provided by backend
   const [status, setStatus] = useState('booting'); // booting | authenticated | unauthenticated
-  const [expired, setExpired] = useState(false);
   const tokenRef = useRef(null);
 
   const applySession = useCallback((session) => {
     tokenRef.current = session.token;
     setUser(session.user ?? null);
     setOrganization(session.organization ?? null);
-    setRole(session.role ?? null);
-    setTeamIds(session.teamIds ?? []);
     // Backend does not emit a permission list yet — stays null until it does.
     setPermissions(session.permissions ?? null);
-    setExpired(false);
     setStatus(session.user ? 'authenticated' : 'unauthenticated');
   }, []);
 
@@ -36,8 +57,6 @@ export function AuthProvider({ children }) {
     tokenRef.current = null;
     setUser(null);
     setOrganization(null);
-    setRole(null);
-    setTeamIds([]);
     setPermissions(null);
     setStatus((prev) => (prev === 'unauthenticated' ? prev : 'unauthenticated'));
   }, []);
@@ -55,7 +74,6 @@ export function AuthProvider({ children }) {
         return res.accessToken;
       },
       onUnauthenticated: () => {
-        setExpired(true);
         logout();
       },
     });
@@ -93,16 +111,24 @@ export function AuthProvider({ children }) {
 
   // Boot: cookie refresh → me. Both bootstrap-flagged, so any failure lands
   // directly unauthenticated without ever touching the refresh path again.
+  // The sequence is single-flight across mounts (see sharedBootSequence):
+  // a remount awaits the running boot instead of consuming the refresh
+  // cookie a second time.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-      const res = await managerRef.current.request('/auth/refresh', { method: 'POST', bootstrap: true, withToken: false });
+        const session = await sharedBootSequence(() =>
+          restoreSession({
+            refresh: () => managerRef.current.request('/auth/refresh', { method: 'POST', bootstrap: true, withToken: false }),
+            fetchMe: () => managerRef.current.request('/auth/me', { bootstrap: true }),
+            setToken: (t) => {
+              tokenRef.current = t;
+            },
+          })
+        );
         if (cancelled) return;
-        tokenRef.current = res.accessToken;
-        const me = await managerRef.current.request('/auth/me', { bootstrap: true });
-        if (cancelled) return;
-        applySession({ token: res.accessToken, ...me });
+        applySession(session);
       } catch {
         if (!cancelled) logout();
       }
@@ -113,8 +139,8 @@ export function AuthProvider({ children }) {
   }, [applySession, logout]);
 
   const value = useMemo(
-    () => ({ user, organization, role, teamIds, permissions, status, expired, api, login, logout: logoutRemote }),
-    [user, organization, role, teamIds, permissions, status, expired, api, login, logoutRemote]
+    () => ({ user, organization, permissions, status, api, login, logout: logoutRemote }),
+    [user, organization, permissions, status, api, login, logoutRemote]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

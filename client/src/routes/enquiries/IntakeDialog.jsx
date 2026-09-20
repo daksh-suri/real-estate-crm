@@ -5,6 +5,7 @@ import { ErrorState } from '../../components/ui/data';
 import PermissionGate from '../../permissions/permissions';
 import { useAuth } from '../../auth/AuthContext';
 import { useToast } from '../../components/ui/Toast';
+import { useIdempotencyKey } from '../../hooks/useIdempotencyKey';
 
 const CHANNELS = ['WALK_IN', 'PHONE', 'OWNED_FORM'];
 
@@ -14,6 +15,9 @@ const CHANNELS = ['WALK_IN', 'PHONE', 'OWNED_FORM'];
 export default function IntakeDialog({ open, onClose, onCreated }) {
   const { api } = useAuth();
   const { push } = useToast();
+  // Stable for the dialog mount: a timeout retry replays instead of forking
+  // a second intake event.
+  const idempotencyKey = useIdempotencyKey();
   const [form, setForm] = useState({
     channel: 'WALK_IN',
     contactName: '',
@@ -54,7 +58,7 @@ export default function IntakeDialog({ open, onClose, onCreated }) {
     try {
       const res = await api('/enquiries', {
         method: 'POST',
-        headers: { 'Idempotency-Key': crypto.randomUUID() },
+        headers: { 'Idempotency-Key': idempotencyKey },
         body: {
           channel: form.channel,
           contactName: optionalText(form.contactName),

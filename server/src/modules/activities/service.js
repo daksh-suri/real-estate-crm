@@ -1,4 +1,4 @@
-const { idempotentCreate, recordIdempotency } = require('../../lib/idempotency');
+const { idempotentCreate, recordIdempotency, OPERATION_TASK_CREATE } = require('../../lib/idempotency');
 const { notFoundError, forbiddenError, badRequestError, conflictError } = require('../../lib/httpError');
 const { resolveRef } = require('../../lib/refs');
 
@@ -199,7 +199,7 @@ async function listTasks({ tenantPrisma, filters = {}, limit = 20, offset = 0 })
   return rows.map(presentTask);
 }
 
-async function createTask({ tenantPrisma, organizationId, actorId, input }) {
+async function runTaskTransaction({ tenantPrisma, organizationId, actorId, idempotencyKey, requestHash, input }) {
   return tenantPrisma.$transaction(
     async (tx) => {
       const assignee = await resolveAssignee({ tx, organizationId, assignedTo: input.assignedTo });
@@ -220,10 +220,34 @@ async function createTask({ tenantPrisma, organizationId, actorId, input }) {
           createdBy: actorId,
         },
       });
-      return presentTask(task);
+      const body = presentTask(task);
+      if (idempotencyKey) {
+        await recordIdempotency({
+          tx,
+          organizationId,
+          key: idempotencyKey,
+          operationType: OPERATION_TASK_CREATE,
+          requestHash,
+          responseBody: body,
+        });
+      }
+      return body;
     },
     { timeout: 10000, maxWait: 5000 }
   );
+}
+
+async function createTask({ tenantPrisma, organizationId, actorId, idempotencyKey, input }) {
+  return idempotentCreate({
+    client: tenantPrisma,
+    organizationId,
+    key: idempotencyKey,
+    operationType: OPERATION_TASK_CREATE,
+    hashInput: { ...input },
+    retryMessage: 'Concurrent task creation conflict, please retry',
+    run: (requestHash) =>
+      runTaskTransaction({ tenantPrisma, organizationId, actorId, idempotencyKey, requestHash, input }),
+  });
 }
 
 async function completeTask({ tenantPrisma, organizationId, taskId }) {
