@@ -399,6 +399,30 @@ IntegrationConfig. Phase 3 Part B/C defines their shape; no tables, routes, or l
 **Why:** One atomic claim statement makes horizontal scale structurally safe; pre-incremented attempts make crash loops terminate; derived-everything-else keeps the worker to four small files.
 **Important Edge Cases:** Crash between dispatch and marking → retried (duplicate possible at the provider — hence stable keys). Concurrent workers split the batch via SKIP LOCKED (tested: 5 events, 5 processed, 5 sends). Stale heartbeat → `stale` (5min default), never blocks deploys.
 
+### DEC-033 — Audit consolidation: shared helper, merge coverage, append-only enforcement
+**Status:** IMPLEMENTED
+**Problem / Context:** Phase 3 Part N #17 ("confirm every state-changing operation writes `audit_logs`") collides with per-checkpoint DECs that deliberately limited writes to Deal create/transition + Document verify/reject (plus merge, specified but never implemented). Blanket coverage of reservation/booking/payment/visit/task mutations would contradict DEC-025–DEC-032 and fork history across row lifecycles that already preserve it.
+**Decision:** Consolidate the specified set. `server/src/lib/audit.js` `writeAudit(tx, …)` is the single writer: accepts ONLY a tx client (request-level clients refused — they carry `$transaction`), requires server-derived `organizationId` + `actorId`, never opens its own transaction. Deal create/transition + Document verify/reject refactored onto it (payloads unchanged). Missing `contact.merge` row added: controller passes `req.auth.userId`, service writes `entityType Contact / entityId duplicateId / action contact.merge` with `beforeState {survivorId, duplicateId}` + `afterState {mergedInto, moved:{…counts}}` — ids + counts only, never contact PII. Tenant wrapper (`wrapModel`) rejects `update/updateMany/updateManyAndReturn/upsert/delete/deleteMany` on `auditLog` with 403 (fail-closed, covers request + tx clients); reads + `create` unaffected. No read API (Phase 3 specifies none), no worker/system rows (expiry history lives on the row; no system-identity model invented), no Tier-1/payment/booking/visit/task expansion.
+**Rules:** Every future mandated audit write uses `writeAudit` inside the business tx. No audit read/update/delete endpoints. No PII in before/after payloads.
+**Why:** One helper + one enforcement point keeps the trail append-only by construction instead of by convention; the merge row closes the last Phase-3-mandated gap without reopening settled non-coverage decisions.
+**Important Edge Cases:** Concurrent merges → one 200 + one 409, single row (loser observes soft-delete). Failed/forged merges throw before the write → zero rows. Idempotent retries converge on the business mutation, so no duplicate rows.
+
+### DEC-034 — Frontend foundation: router, fetch+hooks, loop-proof session
+**Status:** IMPLEMENTED
+**Problem / Context:** The Checkpoint-1 client was a dark marketing scaffold with no router, no API layer, and one raw `/health` fetch. Domain screens need shared shell/tokens/primitives plus a session boundary that cannot loop on 401s.
+**Decision:** `client/src` foundation: `react-router-dom` (sole runtime dep; nested `/app` hierarchy, `RequireAuth`); plain CSS variables (`styles/tokens.css`, light warm/off-white — no dark mode, no Tailwind); server state via hand-rolled `apiClient` (single-attempt, never retries) + `useApi` hook (no query library, per explicit decision). Access token in memory only, refresh on HttpOnly cookie. 401 orchestration in framework-free `auth/sessionManager.js`: `apiClient` never refreshes; one shared `refreshInFlight` promise (cleared in `finally`); `refreshFailed` latched until explicit login; bootstrap calls (`login/me/refresh`) and flagged replays go straight to unauthenticated — replay exactly once per caller, replay-401 never refreshes. Permission boundary (`can(resource,action)` + `PermissionGate`) is UX-only and visible-by-default until the backend emits a session permission list; never gate on role names. Only `/app/dashboard` is real (labeled mock data); all other routes are explicit placeholders — no fake domain data.
+**Rules:** No new client deps without a checkpoint-level reason. No tokens in storage. No retry/refresh inside `apiClient`. No role-name checks in UI code. No domain business logic in foundation components.
+**Why:** One refresh site + typed single-attempt fetch makes redirect/refresh loops structurally impossible (proven by 6 exact-count tests); visible-by-default gates keep nav working before the permissions contract lands.
+**Important Edge Cases:** Triple-concurrent 401s share one refresh with per-caller replays (1 refresh / 6 data calls). Latch blocks all further refresh until login. Boot/login 401s never touch refresh. Logout is idempotent under concurrent handlers.
+**Open items:** Login requires pasting an org UUID (org discovery is a future backend+frontend task); session permission list not yet emitted by `GET /auth/me`.
+
+### DEC-035 — Frontend slice conventions + enquiry `unmatched` filter (17B)
+**Status:** IMPLEMENTED
+**Problem / Context:** The first domain slice needed list/detail/URL conventions that later screens will follow, and the unmatched-enquiry review queue had no server filter (`contactId: null` is not expressible through the existing exact-match filters).
+**Decision:** (1) Backend: `GET /enquiries?unmatched=true|false` maps to `where.contactId = null | { not: null }` (validation + controller passthrough + service clause, ~10 lines, no migration). Narrowly scoped per the frontend-checkpoint backend-change rule; covered by backend tests. (2) Frontend: `useUrlListState` (search/page/declared filter keys ↔ URL, refresh-safe deep links); bare-array lists paginate offset-style with total-less `Pagination` (`hasMore = rows.length === limit`); flat rows resolve names via bounded per-page `RelatedName` batching (no per-row hooks, no store); lead status UI offers only `validLeadTransitions` (frontend mirror of the backend map — both must change together); no `POST /leads` UI (intake-only creation preserved); merge UI selects IDs only, backend transaction stays authoritative; deal rows on contact/lead details are read-only text (no links until deal screens land).
+**Rules:** Lists paginate server-side; filters must exist server-side (the `unmatched` addition is the model, not an exception); no client-side filtering of paged data except the search box where the backend supports `search`.
+**Why:** URL state makes every list deep-linkable for free; the tiny backend filter keeps the review queue correct at any scale instead of scanning a truncated page client-side.
+
 ## 9. Assignment Architecture
 
 ```
@@ -487,7 +511,7 @@ Each pattern exists because application-only checks (`if (!x) create x`) fail un
 
 Strong tests are required for: tenant isolation, authorization matrix, transactions, concurrent requests, idempotency (replay + conflict + races), state transitions (valid and invalid), uniqueness (including reopen conflicts), soft-delete read/write behavior, cross-organization attacks, external failure boundaries (malformed payloads preserved, not dropped), assignment (order, concurrency, deactivation, manual-wins), contact matching tiers, repeat-enquiry attach-vs-create.
 
-Snapshot (not a requirement): **434 tests / 16 suites** — auth 61, tenantIsolation 50, contactsRequirements 56, enquiryLead 33, organizationsTeams 33, reservations 32, siteVisits 29, propertyHierarchy 28, bookings 21, documents 20, payments 17, workerOutbox 15, activitiesTasks 14, dealsPipeline 20, refreshConcurrency 3, health 2. Concurrency-sensitive tests are re-run multiple times before sign-off. Never weaken an existing test to make a new feature pass.
+Snapshot (not a requirement): **442 tests / 17 suites** — auth 61, tenantIsolation 50, contactsRequirements 56, enquiryLead 33, organizationsTeams 33, reservations 32, siteVisits 29, propertyHierarchy 28, bookings 21, documents 20, payments 17, workerOutbox 15, activitiesTasks 14, dealsPipeline 20, auditTrail 8, refreshConcurrency 3, health 2 (443 total after unmatched-filter test). Client: 10 vitest tests (sessionManager 401 fetch counts + slice format/transition map). Concurrency-sensitive tests are re-run multiple times before sign-off. Never weaken an existing test to make a new feature pass.
 
 ## 14. Implementation Status
 
@@ -508,7 +532,8 @@ Snapshot (not a requirement): **434 tests / 16 suites** — auth 61, tenantIsola
 | 13 | Documents | COMPLETE | Row-per-version lifecycle, SigV4 storage boundary, role-gated verify/reject with audit, idempotent resubmit; 20 integration tests |
 | 14 | Activity & Task | COMPLETE | Immutable activity log, OPEN/DONE tasks with derived OVERDUE, atomic explicit follow-ups, dedicated complete; 14 integration tests; uncommitted on `dev` at time of writing |
 | 15 | Background jobs & outbox | COMPLETE | OutboxEvent + SKIP LOCKED processor, named scheduler (expiry + outbox), notification lanes with dispatch-time consent, heartbeat health; 15 integration tests; uncommitted on `dev` at time of writing |
-| 16+ | Audit pass, frontend, dashboards, observability | NOT STARTED | Phase 3 Part N order |
+| 16 | Audit trail consolidation | COMPLETE | Shared writeAudit helper, contact.merge coverage, append-only enforcement; specified set only, no read API, no worker rows; 8 integration tests |
+| 17+ | Frontend, dashboards, observability | IN PROGRESS (17B slice) | Foundation + enquiries/contacts/leads screens, unmatched filter; remaining domain screens pending |
 
 Checkpoint 7 verified status: intake pipeline; Checkpoint-5 matching reuse (no second implementation); Lead foundation (no manual create); ROUND_ROBIN (+deterministic, concurrent-safe) and manual reassignment; IdempotencyKey table + replay/conflict/race semantics; partial-index + row-lock concurrency protection; 33 integration tests; project-less enquiries open separate Leads; Activity integration deferred (no Activity table yet); PROJECT_AFFINITY/TERRITORY/MANUAL_OVERRIDE_CHECK deferred.
 
@@ -579,4 +604,4 @@ Checkpoint 15 verified status: `OutboxEvent(org, eventType string, payload Json,
 **Stack:** JavaScript + React + Node/Express + PostgreSQL + Prisma.
 **Architecture:** Modular monolith + organization-based multi-tenancy.
 **Core principles:** Postgres is the source of truth. Tenancy is mandatory and fail-closed. Permissions/scopes, never role-name checks. Transactions guard multi-record flows. Constraints + row locks guard concurrency. Idempotency lives in a tenant-safe table. Activity = happened; Task = to-do; Enquiry = intake event; Lead = opportunity. Project repeats may reuse an OPEN Lead; project-less enquiries never auto-reuse. No bypassing auth/tenancy/transactions/idempotency. No speculative infra. No deferred features without a decision.
-**Current checkpoint:** 15 (Background jobs & outbox) implemented and validated; audit pass + frontend next.
+**Current checkpoint:** 17B (Enquiries/Contacts/Leads slice) implemented and validated; remaining domain screens next.

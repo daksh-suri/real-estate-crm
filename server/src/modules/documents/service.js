@@ -19,8 +19,8 @@ const ALLOWED_TRANSITIONS = {
 };
 
 const AUDIT_ENTITY_DOCUMENT = 'Document';
-const AUDIT_ACTION_VERIFY = 'document.verify';
-const AUDIT_ACTION_REJECT = 'document.reject';
+
+const { writeAudit, AUDIT_ACTIONS } = require('../../lib/audit');
 
 // ---------------------------------------------------------------------------
 // Reads
@@ -212,15 +212,14 @@ async function reviewDocument({ tenantPrisma, organizationId, actorId, documentI
       }
 
       const updated = await tx.document.update({ where: { id: documentId }, data });
-      await tx.auditLog.create({
-        data: {
-          actorId,
-          entityType: AUDIT_ENTITY_DOCUMENT,
-          entityId: documentId,
-          action: target === 'VERIFIED' ? AUDIT_ACTION_VERIFY : AUDIT_ACTION_REJECT,
-          beforeState: { status: row.status, rejectionReason: row.rejectionReason, reviewedBy: row.reviewedBy, reviewedAt: row.reviewedAt },
-          afterState: { status: target, rejectionReason: updated.rejectionReason, reviewedBy: actorId, reviewedAt: updated.reviewedAt },
-        },
+      await writeAudit(tx, {
+        organizationId,
+        actorId,
+        entityType: AUDIT_ENTITY_DOCUMENT,
+        entityId: documentId,
+        action: target === 'VERIFIED' ? AUDIT_ACTIONS.DOCUMENT_VERIFY : AUDIT_ACTIONS.DOCUMENT_REJECT,
+        beforeState: { status: row.status, rejectionReason: row.rejectionReason, reviewedBy: row.reviewedBy, reviewedAt: row.reviewedAt },
+        afterState: { status: target, rejectionReason: updated.rejectionReason, reviewedBy: actorId, reviewedAt: updated.reviewedAt },
       });
       return updated;
     },

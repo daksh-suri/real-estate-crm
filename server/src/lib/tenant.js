@@ -546,7 +546,7 @@ function wrapModel(modelName, rawModel, organizationId, guardClient) {
   // client (rawTx) so guards see rows created earlier in the same
   // transaction; outside transactions it is the global raw client.
   const guards = guardClient || prisma;
-  return {
+  const delegate = {
     // ----- READ: filter-injected -----
     findMany: async (args = {}) => {
       assertTenantContext(organizationId);
@@ -991,6 +991,29 @@ function wrapModel(modelName, rawModel, organizationId, guardClient) {
       return rawModel.deleteMany({ ...args, where });
     },
   };
+
+  // AuditLog is append-only (Checkpoint 16): history rows are created by
+  // writeAudit inside the business transaction and read back for history
+  // views. No CRM API may update or delete them — fail closed here so even
+  // a future service-layer call cannot silently mutate history.
+  if (modelName === 'auditLog') {
+    const appendOnlyError = () => {
+      const err = new Error('AuditLog is append-only: updates and deletes are not allowed');
+      err.statusCode = 403;
+      return err;
+    };
+    const refuse = async () => {
+      throw appendOnlyError();
+    };
+    delegate.update = refuse;
+    delegate.updateMany = refuse;
+    delegate.updateManyAndReturn = refuse;
+    delegate.upsert = refuse;
+    delegate.delete = refuse;
+    delegate.deleteMany = refuse;
+  }
+
+  return delegate;
 }
 
 // ---------------------------------------------------------------------------

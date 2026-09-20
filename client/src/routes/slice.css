@@ -1,0 +1,99 @@
+/* Checkpoint 17B slice styles: detail lists, forms, merge comparison. */
+
+.detail-list {
+  display: flex;
+  flex-direction: column;
+}
+.detail-row {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border-default);
+}
+.detail-row:last-child {
+  border-bottom: none;
+}
+.detail-row dt {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--fg-secondary);
+}
+.detail-row dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 640px) {
+  .detail-row {
+    grid-template-columns: 1fr;
+    gap: var(--space-1);
+  }
+}
+
+.form-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.intake-outcome {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.raw-disclosure {
+  margin-top: var(--space-3);
+}
+.raw-disclosure summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: var(--text-sm);
+  color: var(--accent-primary);
+}
+.raw-json {
+  margin-top: var(--space-2);
+  background-color: var(--bg-muted);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  font-size: var(--text-sm);
+  overflow-x: auto;
+  max-height: 320px;
+}
+
+.section-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.merge-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+}
+@media (max-width: 800px) {
+  .merge-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.merge-pick {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  align-items: center;
+}
+.merge-pick__option {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background-color: var(--bg-surface);
+  padding: var(--space-2) var(--space-4);
+  cursor: pointer;
+  font-weight: 600;
+}
+.merge-pick__option--active {
+  border-color: var(--accent-primary);
+  background-color: var(--accent-soft);
+  color: var(--accent-primary);
+}
