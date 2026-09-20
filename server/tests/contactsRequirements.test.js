@@ -15,6 +15,7 @@ describe('Checkpoint 5 — Contact + Requirement', () => {
   let roleAdminA, roleAgentA, roleAdminB;
   let permContactCreate, permContactRead, permContactUpdate, permContactDelete;
   let permReqCreate, permReqRead, permReqUpdate, permReqDelete;
+  let permEnquiryCreate, permDealCreate, permSiteVisitCreate, permLeadUpdate, permLeadRead;
   let userAdminA, userAgentA, userAdminB;
   let plainAdminA = 'AdminPass123!';
   let plainAgentA = 'AgentPass123!';
@@ -22,8 +23,15 @@ describe('Checkpoint 5 — Contact + Requirement', () => {
 
   beforeAll(async () => {
     await prisma.refreshToken.deleteMany({});
+    await prisma.idempotencyKey.deleteMany({});
+    await prisma.siteVisit.deleteMany({});
+    await prisma.deal.deleteMany({});
+    await prisma.lead.deleteMany({});
+    await prisma.enquiry.deleteMany({});
     await prisma.possibleDuplicate.deleteMany({});
     await prisma.requirement.deleteMany({});
+    await prisma.unit.deleteMany({});
+    await prisma.project.deleteMany({});
     await prisma.contact.deleteMany({});
     await prisma.teamMembership.deleteMany({});
     await prisma.rolePermission.deleteMany({});
@@ -44,18 +52,24 @@ describe('Checkpoint 5 — Contact + Requirement', () => {
     permReqRead = await prisma.permission.create({ data: { resource: 'requirement', action: 'read' } });
     permReqUpdate = await prisma.permission.create({ data: { resource: 'requirement', action: 'update' } });
     permReqDelete = await prisma.permission.create({ data: { resource: 'requirement', action: 'delete' } });
+    // Additive-only: fixtures for merge-reassignment tests (lead/deal/visit chains)
+    permEnquiryCreate = await prisma.permission.create({ data: { resource: 'enquiry', action: 'create' } });
+    permDealCreate = await prisma.permission.create({ data: { resource: 'deal', action: 'create' } });
+    permSiteVisitCreate = await prisma.permission.create({ data: { resource: 'siteVisit', action: 'create' } });
+    permLeadUpdate = await prisma.permission.create({ data: { resource: 'lead', action: 'update' } });
+    permLeadRead = await prisma.permission.create({ data: { resource: 'lead', action: 'read' } });
 
     roleAdminA = await prisma.role.create({ data: { name: 'Admin', organizationId: orgA.id } });
     roleAgentA = await prisma.role.create({ data: { name: 'Agent', organizationId: orgA.id } });
     roleAdminB = await prisma.role.create({ data: { name: 'Admin', organizationId: orgB.id } });
 
-    for (const perm of [permContactCreate, permContactRead, permContactUpdate, permContactDelete, permReqCreate, permReqRead, permReqUpdate, permReqDelete]) {
+    for (const perm of [permContactCreate, permContactRead, permContactUpdate, permContactDelete, permReqCreate, permReqRead, permReqUpdate, permReqDelete, permEnquiryCreate, permDealCreate, permSiteVisitCreate, permLeadUpdate, permLeadRead]) {
       await prisma.rolePermission.create({ data: { organizationId: orgA.id, roleId: roleAdminA.id, permissionId: perm.id, scope: 'ORGANIZATION' } });
     }
     for (const perm of [permContactRead, permReqRead]) {
       await prisma.rolePermission.create({ data: { organizationId: orgA.id, roleId: roleAgentA.id, permissionId: perm.id, scope: 'ORGANIZATION' } });
     }
-    for (const perm of [permContactCreate, permContactRead, permContactUpdate, permContactDelete, permReqCreate, permReqRead, permReqUpdate, permReqDelete]) {
+    for (const perm of [permContactCreate, permContactRead, permContactUpdate, permContactDelete, permReqCreate, permReqRead, permReqUpdate, permReqDelete, permEnquiryCreate, permDealCreate, permSiteVisitCreate, permLeadUpdate, permLeadRead]) {
       await prisma.rolePermission.create({ data: { organizationId: orgB.id, roleId: roleAdminB.id, permissionId: perm.id, scope: 'ORGANIZATION' } });
     }
 
@@ -72,8 +86,15 @@ describe('Checkpoint 5 — Contact + Requirement', () => {
 
   afterAll(async () => {
     await prisma.refreshToken.deleteMany({});
+    await prisma.idempotencyKey.deleteMany({});
+    await prisma.siteVisit.deleteMany({});
+    await prisma.deal.deleteMany({});
+    await prisma.lead.deleteMany({});
+    await prisma.enquiry.deleteMany({});
     await prisma.possibleDuplicate.deleteMany({});
     await prisma.requirement.deleteMany({});
+    await prisma.unit.deleteMany({});
+    await prisma.project.deleteMany({});
     await prisma.contact.deleteMany({});
     await prisma.teamMembership.deleteMany({});
     await prisma.rolePermission.deleteMany({});
@@ -86,8 +107,15 @@ describe('Checkpoint 5 — Contact + Requirement', () => {
   });
 
   afterEach(async () => {
+    await prisma.idempotencyKey.deleteMany({});
+    await prisma.siteVisit.deleteMany({});
+    await prisma.deal.deleteMany({});
+    await prisma.lead.deleteMany({});
+    await prisma.enquiry.deleteMany({});
     await prisma.possibleDuplicate.deleteMany({});
     await prisma.requirement.deleteMany({});
+    await prisma.unit.deleteMany({});
+    await prisma.project.deleteMany({});
     await prisma.contact.deleteMany({});
     await prisma.refreshToken.deleteMany({});
     // Keep users/orgs/roles/perms, but clean extra users
@@ -607,6 +635,201 @@ describe('Checkpoint 5 — Contact + Requirement', () => {
       // Source is merged (invisible)
       const getX = await request(app).get(`/contacts/${x.body.contact.id}`).set('Authorization', `Bearer ${token}`);
       expect(getX.status).toBe(404);
+    });
+
+    // Fixtures for reassignment tests: project + intake lead (+deal, +visit) per contact.
+    async function mergeProject(token, tag) {
+      return prisma.project.create({ data: { name: `${tag}-${Date.now()}`, organizationId: orgA.id } });
+    }
+    async function intakeLead(token, { name, email, phone, projectId }) {
+      const body = { channel: 'WALK_IN', contactName: name, phone, email };
+      if (projectId) body.projectId = projectId;
+      const res = await request(app).post('/enquiries').set('Authorization', `Bearer ${token}`).send(body);
+      expect(res.status).toBe(201);
+      return prisma.lead.findFirst({ where: { id: res.body.lead.id } });
+    }
+    async function makeDealFor(token, leadId) {
+      const res = await request(app).post('/deals').set('Authorization', `Bearer ${token}`).send({ leadId });
+      expect(res.status).toBe(201);
+      return res.body;
+    }
+    async function makeVisitFor(token, { contactId, projectId, dealId }) {
+      const res = await request(app)
+        .post('/site-visits')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ agentId: userAdminA.id, projectId, contactId, dealId, scheduledAt: new Date(Date.now() + 24 * 3600000).toISOString() });
+      expect(res.status).toBe(201);
+      return res.body.siteVisit;
+    }
+
+    test('merge reassigns enquiries and leads to survivor', async () => {
+      const token = await login(userAdminA.email, plainAdminA, orgA.id);
+      const s = await request(app).post('/contacts').set('Authorization', `Bearer ${token}`).send({ name: 'SurvEL', email: 'survel@test.com', phone: '9100000101' });
+      const d = await request(app).post('/contacts').set('Authorization', `Bearer ${token}`).send({ name: 'DupEL', email: 'dupel@test.com', phone: '9100000102' });
+      const project = await mergeProject(token, 'ProjEL');
+      await intakeLead(token, { name: 'DupEL', email: 'dupel@test.com', phone: '9100000102', projectId: project.id });
+      const mergeRes = await request(app).post(`/contacts/${d.body.contact.id}/merge`).set('Authorization', `Bearer ${token}`).send({ targetId: s.body.contact.id });
+      expect(mergeRes.status).toBe(200);
+      const enquiries = await prisma.enquiry.findMany({ where: { contactId: s.body.contact.id } });
+      expect(enquiries.length).toBeGreaterThan(0);
+      expect(await prisma.enquiry.count({ where: { contactId: d.body.contact.id } })).toBe(0);
+      const lead = await prisma.lead.findFirst({ where: { contactId: s.body.contact.id, projectId: project.id } });
+      expect(lead).not.toBeNull();
+      expect(lead.status).toBe('OPEN');
+    });
+
+    test('merge reassigns deals with lead consistency intact', async () => {
+      const token = await login(userAdminA.email, plainAdminA, orgA.id);
+      const s = await request(app).post('/contacts').set('Authorization', `Bearer ${token}`).send({ name: 'SurvD', email: 'survd@test.com', phone: '9100000201' });
+      const d = await request(app).post('/contacts').set('Authorization', `Bearer ${token}`).send({ name: 'DupD', email: 'dupd@test.com', phone: '9100000202' });
+      const project = await mergeProject(token, 'ProjD');
+      const lead = await intakeLead(token, { name: 'DupD', email: 'dupd@test.com', phone: '9100000202', projectId: project.id });
+      const deal = await makeDealFor(token, lead.id);
+      const mergeRes = await request(app).post(`/contacts/${d.body.contact.id}/merge`).set('Authorization', `Bearer ${token}`).send({ targetId: s.body.contact.id });
+      expect(mergeRes.status).toBe(200);
+      const dealAfter = await prisma.deal.findFirst({ where: { id: deal.id } });
+      const leadAfter = await prisma.lead.findFirst({ where: { id: lead.id } });
+      expect(dealAfter.contactId).toBe(s.body.contact.id);
+      expect(leadAfter.contactId).toBe(s.body.contact.id);
+      expect(dealAfter.leadId).toBe(lead.id);
+      expect(leadAfter.id).toBe(dealAfter.leadId);
+    });
+
+    test('merge reassigns site visits to survivor', async () => {
+      const token = await login(userAdminA.email, plainAdminA, orgA.id);
+      const s = await request(app).post('/contacts').set('Authorization', `Bearer ${token}`).send({ name: 'SurvV', email: 'survv@test.com', phone: '9100000301' });
+      const d = await request(app).post('/contacts').set('Authorization', `Bearer ${token}`).send({ name: 'DupV', email: 'dupv@test.com', phone: '9100000302' });
+      const project = await mergeProject(token, 'ProjV');
+      const lead = await intakeLead(token, { name: 'DupV', email: 'dupv@test.com', phone: '9100000302', projectId: project.id });
+      const deal = await makeDealFor(token, lead.id);
+      const visit = await makeVisitFor(token, { contactId: d.body.contact.id, projectId: project.id, dealId: deal.id });
+      const mergeRes = await request(app).post(`/contacts/${d.body.contact.id}/merge`).set('Authorization', `Bearer ${token}`).send({ targetId: s.body.contact.id });
+      expect(mergeRes.status).toBe(200);
+      const visitAfter = await prisma.siteVisit.findFirst({ where: { id: visit.id } });
+      expect(visitAfter.contactId).toBe(s.body.contact.id);
+      expect(visitAfter.dealId).toBe(deal.id);
+      expect(await prisma.siteVisit.count({ where: { contactId: d.body.contact.id } })).toBe(0);
+    });
+
+    test('combined merge reassigns all relation types then soft-deletes duplicate', async () => {
+      const token = await login(userAdminA.email, plainAdminA, orgA.id);
+      const s = await request(app).post('/contacts').set('Authorization', `Bearer ${token}`).send({ name: 'SurvAll', email: 'survall@test.com', phone: '9100000401' });
+      const d = await request(app).post('/contacts').set('Authorization', `Bearer ${token}`).send({ name: 'DupAll', email: 'dupall@test.com', phone: '9100000402' });
+      const project = await mergeProject(token, 'ProjAll');
+      const req = await request(app).post(`/contacts/${d.body.contact.id}/requirements`).set('Authorization', `Bearer ${token}`).send({ unitTypePreference: '2BHK' });
+      expect(req.status).toBe(201);
+      const lead = await intakeLead(token, { name: 'DupAll', email: 'dupall@test.com', phone: '9100000402', projectId: project.id });
+      const deal = await makeDealFor(token, lead.id);
+      const visit = await makeVisitFor(token, { contactId: d.body.contact.id, projectId: project.id, dealId: deal.id });
+      const mergeRes = await request(app).post(`/contacts/${d.body.contact.id}/merge`).set('Authorization', `Bearer ${token}`).send({ targetId: s.body.contact.id });
+      expect(mergeRes.status).toBe(200);
+      const sid = s.body.contact.id, did = d.body.contact.id;
+      expect((await prisma.requirement.findFirst({ where: { id: req.body.id } })).contactId).toBe(sid);
+      expect(await prisma.enquiry.count({ where: { contactId: did } })).toBe(0);
+      expect((await prisma.lead.findFirst({ where: { id: lead.id } })).contactId).toBe(sid);
+      expect((await prisma.deal.findFirst({ where: { id: deal.id } })).contactId).toBe(sid);
+      expect((await prisma.siteVisit.findFirst({ where: { id: visit.id } })).contactId).toBe(sid);
+      const rawDup = await prisma.contact.findFirst({ where: { id: did } });
+      expect(rawDup.deletedAt).not.toBeNull();
+      expect(rawDup.consentSource).toBe(`merged_into:${sid}`);
+      expect((await request(app).get(`/contacts/${did}`).set('Authorization', `Bearer ${token}`)).status).toBe(404);
+    });
+
+    test('OPEN lead conflict moves duplicate lead as DISQUALIFIED without duplicate OPEN', async () => {
+      const token = await login(userAdminA.email, plainAdminA, orgA.id);
+      const s = await request(app).post('/contacts').set('Authorization', `Bearer ${token}`).send({ name: 'SurvC', email: 'survc@test.com', phone: '9100000501' });
+      const d = await request(app).post('/contacts').set('Authorization', `Bearer ${token}`).send({ name: 'DupC', email: 'dupc@test.com', phone: '9100000502' });
+      const project = await mergeProject(token, 'ProjC');
+      const leadA = await intakeLead(token, { name: 'SurvC', email: 'survc@test.com', phone: '9100000501', projectId: project.id });
+      const leadB = await intakeLead(token, { name: 'DupC', email: 'dupc@test.com', phone: '9100000502', projectId: project.id });
+      const mergeRes = await request(app).post(`/contacts/${d.body.contact.id}/merge`).set('Authorization', `Bearer ${token}`).send({ targetId: s.body.contact.id });
+      expect(mergeRes.status).toBe(200);
+      // No duplicate OPEN lead for the same contact + project
+      expect(await prisma.lead.count({ where: { contactId: s.body.contact.id, projectId: project.id, status: 'OPEN', deletedAt: null } })).toBe(1);
+      // Survivor's own lead untouched and still OPEN
+      expect((await prisma.lead.findFirst({ where: { id: leadA.id } })).status).toBe('OPEN');
+      // Duplicate's lead moved as DISQUALIFIED — reconciliation parking, not a verdict
+      const moved = await prisma.lead.findFirst({ where: { id: leadB.id } });
+      expect(moved.contactId).toBe(s.body.contact.id);
+      expect(moved.status).toBe('DISQUALIFIED');
+      // Row otherwise untouched: same project, origin, assignment
+      expect(moved.projectId).toBe(project.id);
+      expect(moved.originEnquiryId).toBe(leadB.originEnquiryId);
+      expect(moved.assignedAgentId).toBe(leadB.assignedAgentId);
+      // History preserved: origin enquiry moved to survivor but still linked
+      const origin = await prisma.enquiry.findFirst({ where: { id: leadB.originEnquiryId } });
+      expect(origin.contactId).toBe(s.body.contact.id);
+      expect(origin.linkedLeadId).toBe(leadB.id);
+    });
+
+    test('reconciled lead reopens only when the slot frees (not terminal)', async () => {
+      const token = await login(userAdminA.email, plainAdminA, orgA.id);
+      const s = await request(app).post('/contacts').set('Authorization', `Bearer ${token}`).send({ name: 'SurvR', email: 'survr@test.com', phone: '9100000601' });
+      const d = await request(app).post('/contacts').set('Authorization', `Bearer ${token}`).send({ name: 'DupR', email: 'dupr@test.com', phone: '9100000602' });
+      const project = await mergeProject(token, 'ProjR');
+      const leadA = await intakeLead(token, { name: 'SurvR', email: 'survr@test.com', phone: '9100000601', projectId: project.id });
+      const leadB = await intakeLead(token, { name: 'DupR', email: 'dupr@test.com', phone: '9100000602', projectId: project.id });
+      await request(app).post(`/contacts/${d.body.contact.id}/merge`).set('Authorization', `Bearer ${token}`).send({ targetId: s.body.contact.id });
+      // Slot occupied → reopen refused by the uniqueness guard, not by stigma
+      const blocked = await request(app).patch(`/leads/${leadB.id}`).set('Authorization', `Bearer ${token}`).send({ status: 'OPEN' });
+      expect(blocked.status).toBe(409);
+      // Slot frees → the reconciled lead reopens like any disqualified lead
+      const closeA = await request(app).patch(`/leads/${leadA.id}`).set('Authorization', `Bearer ${token}`).send({ status: 'DISQUALIFIED' });
+      expect(closeA.status).toBe(200);
+      const reopen = await request(app).patch(`/leads/${leadB.id}`).set('Authorization', `Bearer ${token}`).send({ status: 'OPEN' });
+      expect(reopen.status).toBe(200);
+      expect(await prisma.lead.count({ where: { contactId: s.body.contact.id, projectId: project.id, status: 'OPEN', deletedAt: null } })).toBe(1);
+    });
+
+    test('failed merge performs zero writes across all relations', async () => {
+      const token = await login(userAdminA.email, plainAdminA, orgA.id);
+      const s = await request(app).post('/contacts').set('Authorization', `Bearer ${token}`).send({ name: 'SurvF', email: 'survf@test.com', phone: '9100000701' });
+      const d = await request(app).post('/contacts').set('Authorization', `Bearer ${token}`).send({ name: 'DupF', email: 'dupf@test.com', phone: '9100000702' });
+      const project = await mergeProject(token, 'ProjF');
+      const lead = await intakeLead(token, { name: 'DupF', email: 'dupf@test.com', phone: '9100000702', projectId: project.id });
+      await makeDealFor(token, lead.id);
+      const res = await request(app).post(`/contacts/${d.body.contact.id}/merge`).set('Authorization', `Bearer ${token}`).send({ targetId: '00000000-0000-4000-8000-000000000000' });
+      expect(res.status).toBe(404);
+      const did = d.body.contact.id;
+      expect((await request(app).get(`/contacts/${did}`).set('Authorization', `Bearer ${token}`)).status).toBe(200);
+      expect(await prisma.enquiry.count({ where: { contactId: did } })).toBeGreaterThan(0);
+      expect((await prisma.lead.findFirst({ where: { id: lead.id } })).contactId).toBe(did);
+      expect(await prisma.deal.count({ where: { contactId: did } })).toBe(1);
+      expect((await prisma.contact.findFirst({ where: { id: did } })).deletedAt).toBeNull();
+    });
+
+    test('cross-tenant merge reassigns nothing', async () => {
+      const tokenA = await login(userAdminA.email, plainAdminA, orgA.id);
+      const tokenB = await login(userAdminB.email, plainAdminB, orgB.id);
+      const cA = await request(app).post('/contacts').set('Authorization', `Bearer ${tokenA}`).send({ name: 'CTenantA', email: 'ctenanta@test.com', phone: '9100000801' });
+      const cB = await request(app).post('/contacts').set('Authorization', `Bearer ${tokenB}`).send({ name: 'CTenantB', email: 'ctenantb@test.com', phone: '9100000802' });
+      const project = await prisma.project.create({ data: { name: `ProjX-${Date.now()}`, organizationId: orgA.id } });
+      await intakeLead(tokenA, { name: 'CTenantA', email: 'ctenanta@test.com', phone: '9100000801', projectId: project.id });
+      const res = await request(app).post(`/contacts/${cA.body.contact.id}/merge`).set('Authorization', `Bearer ${tokenA}`).send({ targetId: cB.body.contact.id });
+      expect([403, 404]).toContain(res.status);
+      expect((await prisma.lead.findFirst({ where: { contactId: cA.body.contact.id, projectId: project.id } })).contactId).toBe(cA.body.contact.id);
+      expect(await prisma.enquiry.count({ where: { contactId: cA.body.contact.id } })).toBeGreaterThan(0);
+      expect((await prisma.contact.findFirst({ where: { id: cA.body.contact.id } })).deletedAt).toBeNull();
+    });
+
+    test('concurrent merge loser leaves no partial reassignment', async () => {
+      const token = await login(userAdminA.email, plainAdminA, orgA.id);
+      const x = await request(app).post('/contacts').set('Authorization', `Bearer ${token}`).send({ name: 'SrcXP', email: 'srcxp@test.com', phone: '9100000901' });
+      const y = await request(app).post('/contacts').set('Authorization', `Bearer ${token}`).send({ name: 'TgtYP', email: 'tgtyp@test.com', phone: '9100000902' });
+      const z = await request(app).post('/contacts').set('Authorization', `Bearer ${token}`).send({ name: 'TgtZP', email: 'tgtzp@test.com', phone: '9100000903' });
+      const project = await mergeProject(token, 'ProjP');
+      const lead = await intakeLead(token, { name: 'SrcXP', email: 'srcxp@test.com', phone: '9100000901', projectId: project.id });
+      const deal = await makeDealFor(token, lead.id);
+      const visit = await makeVisitFor(token, { contactId: x.body.contact.id, projectId: project.id, dealId: deal.id });
+      const pY = request(app).post(`/contacts/${x.body.contact.id}/merge`).set('Authorization', `Bearer ${token}`).send({ targetId: y.body.contact.id });
+      const pZ = request(app).post(`/contacts/${x.body.contact.id}/merge`).set('Authorization', `Bearer ${token}`).send({ targetId: z.body.contact.id });
+      const [rY, rZ] = await Promise.all([pY, pZ]);
+      expect([rY.status, rZ.status].sort()).toEqual([200, 409]);
+      const winnerId = rY.status === 200 ? y.body.contact.id : z.body.contact.id;
+      expect((await prisma.lead.findFirst({ where: { id: lead.id } })).contactId).toBe(winnerId);
+      expect((await prisma.deal.findFirst({ where: { id: deal.id } })).contactId).toBe(winnerId);
+      expect((await prisma.siteVisit.findFirst({ where: { id: visit.id } })).contactId).toBe(winnerId);
+      expect(await prisma.enquiry.count({ where: { contactId: x.body.contact.id } })).toBe(0);
     });
   });
 

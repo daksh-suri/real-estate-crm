@@ -414,6 +414,8 @@ async function listEnquiries({ tenantPrisma, filters = {}, limit = 20, offset = 
   for (const key of ['channel', 'contactId', 'projectId', 'leadSourceId', 'campaignId', 'linkedLeadId']) {
     if (filters[key] !== undefined) where[key] = filters[key];
   }
+  if (filters.unmatched === 'true') where.contactId = null;
+  else if (filters.unmatched === 'false') where.contactId = { not: null };
   return tenantPrisma.enquiry.findMany({
     where,
     orderBy: { createdAt: 'desc' },

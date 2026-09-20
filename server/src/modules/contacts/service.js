@@ -1,5 +1,6 @@
 const { normalizeEmail, normalizePhone } = require('./normalization');
 const { findStrongMatch, findPossibleMatches, buildMatchSignals } = require('./dedup');
+const { writeAudit, AUDIT_ACTIONS } = require('../../lib/audit');
 
 async function createContact({ tenantPrisma, organizationId, data }) {
   const name = data.name?.trim();
@@ -244,7 +245,7 @@ async function deleteContact({ tenantPrisma, contactId }) {
   return deleted;
 }
 
-async function mergeContacts({ tenantPrisma, organizationId, survivorId, duplicateId }) {
+async function mergeContacts({ tenantPrisma, organizationId, actorId, survivorId, duplicateId }) {
   if (survivorId === duplicateId) {
     const err = new Error('Cannot merge contact with itself');
     err.statusCode = 400;
@@ -302,8 +303,8 @@ async function mergeContacts({ tenantPrisma, organizationId, survivorId, duplica
   }
 
   // Transaction: lock the source Contact row BEFORE the final mergeable check,
-  // then re-read inside the lock, migrate requirements, soft-delete source,
-  // update PossibleDuplicate statuses. The competing transaction blocks on the
+  // then re-read inside the lock, migrate all Contact-owned relations,
+  // soft-delete source, update PossibleDuplicate statuses. The competing transaction blocks on the
   // lock; after acquiring it, it observes the completed merge and returns 409.
   const result = await tenantPrisma.$transaction(
     async (tx) => {
@@ -348,10 +349,93 @@ async function mergeContacts({ tenantPrisma, organizationId, survivorId, duplica
       }
 
       // Move requirements
-      await tx.requirement.updateMany({
+      const moved = {};
+      moved.requirement = (
+        await tx.requirement.updateMany({
+          where: { contactId: duplicateId, organizationId },
+          data: { contactId: survivorId },
+        })
+      ).count;
+
+      // Reassign every other Contact-owned relation to the survivor BEFORE
+      // soft-delete, or active records would point at a contact that tenant
+      // reads no longer expose. All writes are org-scoped; any failure rolls
+      // back the whole merge. Link fields (linkedLeadId, origin, deal lead,
+      // visit deal) are untouched — history is preserved, not rewritten.
+
+      // Enquiries (contactId optional; unmatched null-contact rows unaffected).
+      moved.enquiry = (
+        await tx.enquiry.updateMany({
+          where: { contactId: duplicateId, organizationId },
+          data: { contactId: survivorId },
+        })
+      ).count;
+
+      // Leads: conflicting OPEN leads (survivor holds an OPEN lead on the
+      // same non-null project) move as DISQUALIFIED — a reconciliation
+      // parking state, not a sales verdict (see DEC-028). Everything else
+      // keeps its status; project-less OPEN leads never conflict by design.
+      const dupLeads = await tx.lead.findMany({
         where: { contactId: duplicateId, organizationId },
-        data: { contactId: survivorId },
+        select: { id: true, projectId: true, status: true, deletedAt: true },
       });
+      const conflictingIds = [];
+      for (const lead of dupLeads) {
+        if (lead.status !== 'OPEN' || lead.deletedAt || !lead.projectId) continue;
+        const clash = await tx.lead.findFirst({
+          where: { contactId: survivorId, organizationId, projectId: lead.projectId, status: 'OPEN' },
+          select: { id: true },
+        });
+        if (clash) conflictingIds.push(lead.id);
+      }
+      if (conflictingIds.length > 0) {
+        await tx.lead.updateMany({
+          where: { organizationId, id: { in: conflictingIds } },
+          data: { contactId: survivorId, status: 'DISQUALIFIED' },
+        });
+      }
+      moved.lead =
+        conflictingIds.length +
+        (
+          await tx.lead.updateMany({
+            where: { contactId: duplicateId, organizationId, NOT: { id: { in: conflictingIds } } },
+            data: { contactId: survivorId },
+          })
+        ).count;
+
+      // Deals: their leads moved above to the same contact, so the
+      // lead.contactId === deal.contactId invariant holds post-move.
+      moved.deal = (
+        await tx.deal.updateMany({
+          where: { contactId: duplicateId, organizationId },
+          data: { contactId: survivorId },
+        })
+      ).count;
+
+      // Site visits: paired deals move in the same transaction.
+      moved.siteVisit = (
+        await tx.siteVisit.updateMany({
+          where: { contactId: duplicateId, organizationId },
+          data: { contactId: survivorId },
+        })
+      ).count;
+
+      // Activities: immutable log rows move verbatim (no link fields exist).
+      moved.activity = (
+        await tx.activity.updateMany({
+          where: { contactId: duplicateId, organizationId },
+          data: { contactId: survivorId },
+        })
+      ).count;
+
+      // Documents: version groups move whole — groupId/supersedesId/version
+      // untouched, so history chains stay intact under the survivor.
+      moved.document = (
+        await tx.document.updateMany({
+          where: { contactId: duplicateId, organizationId },
+          data: { contactId: survivorId },
+        })
+      ).count;
       // Soft delete duplicate, store merge metadata in consentSource? For V1, use deletedAt + notes
       const mergedDuplicate = await tx.contact.update({
         where: { id: duplicateId },
@@ -368,6 +452,17 @@ async function mergeContacts({ tenantPrisma, organizationId, survivorId, duplica
           ],
         },
         data: { status: 'CONFIRMED_SAME' },
+      });
+      // Audit the merge in the SAME transaction: ids + moved-row counts only,
+      // never contact PII. If anything above rolls back, this row rolls back.
+      await writeAudit(tx, {
+        organizationId,
+        actorId,
+        entityType: 'Contact',
+        entityId: duplicateId,
+        action: AUDIT_ACTIONS.CONTACT_MERGE,
+        beforeState: { survivorId, duplicateId },
+        afterState: { survivorId, duplicateId, mergedInto: survivorId, moved },
       });
       // Also update any other PossibleDuplicates where duplicate was involved to reflect merge? For V1, keep simple
       return { survivor, duplicate: mergedDuplicate };

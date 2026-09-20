@@ -1,0 +1,51 @@
+/* CRM-specific shared components. */
+
+.stat-tile {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4) var(--space-5);
+  box-shadow: var(--shadow-sm);
+}
+.stat-tile__label {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--fg-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.stat-tile__value {
+  font-size: var(--text-2xl);
+  font-weight: 700;
+  margin-top: var(--space-1);
+}
+.stat-tile__hint {
+  font-size: var(--text-sm);
+  color: var(--fg-muted);
+  margin-top: var(--space-1);
+}
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
+}
+.filter-bar .search-input {
+  flex: 1;
+  min-width: 200px;
+}
+.filter-bar .field:not(.search-input) {
+  width: auto;
+}
+.filter-bar__action {
+  margin-left: auto;
+}
+
+.entity-link {
+  font-weight: 600;
+}

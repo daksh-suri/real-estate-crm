@@ -16,10 +16,9 @@ const ALLOWED_TRANSITIONS = {
 };
 
 const AUDIT_ENTITY_DEAL = 'Deal';
-const AUDIT_ACTION_CREATE = 'deal.create';
-const AUDIT_ACTION_TRANSITION = 'deal.stage_transition';
 
 const { notFoundError } = require('../../lib/httpError');
+const { writeAudit, AUDIT_ACTIONS } = require('../../lib/audit');
 
 async function getDeal({ tenantPrisma, dealId }) {
   const deal = await tenantPrisma.deal.findUnique({ where: { id: dealId } });
@@ -100,15 +99,14 @@ async function createDeal({ tenantPrisma, organizationId, actorId, leadId, unitI
 
       await tx.lead.update({ where: { id: lead.id }, data: { status: 'CONVERTED' } });
 
-      await tx.auditLog.create({
-        data: {
-          actorId,
-          entityType: AUDIT_ENTITY_DEAL,
-          entityId: deal.id,
-          action: AUDIT_ACTION_CREATE,
-          beforeState: null,
-          afterState: { stage: 'NEW', leadId: lead.id, contactId: lead.contactId, unitId: unit ? unit.id : null },
-        },
+      await writeAudit(tx, {
+        organizationId,
+        actorId,
+        entityType: AUDIT_ENTITY_DEAL,
+        entityId: deal.id,
+        action: AUDIT_ACTIONS.DEAL_CREATE,
+        beforeState: null,
+        afterState: { stage: 'NEW', leadId: lead.id, contactId: lead.contactId, unitId: unit ? unit.id : null },
       });
 
       return deal;
@@ -166,15 +164,14 @@ async function transitionDeal({ tenantPrisma, organizationId, actorId, dealId, s
         data: { stage, lostReason: cleanReason },
       });
 
-      await tx.auditLog.create({
-        data: {
-          actorId,
-          entityType: AUDIT_ENTITY_DEAL,
-          entityId: dealId,
-          action: AUDIT_ACTION_TRANSITION,
-          beforeState: { stage: row.stage, lostReason: row.lostReason },
-          afterState: { stage, lostReason: cleanReason },
-        },
+      await writeAudit(tx, {
+        organizationId,
+        actorId,
+        entityType: AUDIT_ENTITY_DEAL,
+        entityId: dealId,
+        action: AUDIT_ACTIONS.DEAL_STAGE_TRANSITION,
+        beforeState: { stage: row.stage, lostReason: row.lostReason },
+        afterState: { stage, lostReason: cleanReason },
       });
 
       return updated;

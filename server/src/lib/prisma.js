@@ -38,6 +38,13 @@ const TENANT_MODELS = new Set([
   'siteVisit',
   'reservation',
   'booking',
+  'paymentPlan',
+  'paymentObligation',
+  'paymentRecord',
+  'document',
+  'activity',
+  'task',
+  'outboxEvent',
 ]);
 
 const GLOBAL_MODELS = new Set([

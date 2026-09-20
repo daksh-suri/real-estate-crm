@@ -40,6 +40,9 @@ const listQuerySchema = z.object({
   leadSourceId: z.string().uuid().optional(),
   campaignId: z.string().uuid().optional(),
   linkedLeadId: z.string().uuid().optional(),
+  // Review-queue filter (17B frontend): 'true' → contact-less intake events
+  // only; 'false' → matched only. Absent → no contact filter.
+  unmatched: z.enum(['true', 'false']).optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
   offset: z.coerce.number().int().min(0).optional(),
 });

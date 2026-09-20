@@ -718,5 +718,24 @@ describe('Checkpoint 7 — Enquiry Intake + Lead Foundation', () => {
       const byStatus = await request(app).get('/leads?status=OPEN').set('Authorization', `Bearer ${token}`);
       expect(byStatus.body.length).toBe(2);
     });
+
+    test('unmatched filter splits contact-less and matched enquiries', async () => {
+      const token = await login(userAdminA.email, plainAdminA, orgA.id);
+      await postIntake(token, { channel: 'PORTAL', ...identity('um1') });
+      await postIntake(token, { channel: 'WALK_IN', rawPayload: { note: 'no-identity' } });
+
+      const unmatched = await request(app).get('/enquiries?unmatched=true').set('Authorization', `Bearer ${token}`);
+      expect(unmatched.status).toBe(200);
+      expect(unmatched.body.length).toBe(1);
+      expect(unmatched.body[0].contactId).toBeNull();
+
+      const matched = await request(app).get('/enquiries?unmatched=false').set('Authorization', `Bearer ${token}`);
+      expect(matched.status).toBe(200);
+      expect(matched.body.length).toBe(1);
+      expect(matched.body[0].contactId).not.toBeNull();
+
+      const bad = await request(app).get('/enquiries?unmatched=yes').set('Authorization', `Bearer ${token}`);
+      expect(bad.status).toBe(400);
+    });
   });
 });

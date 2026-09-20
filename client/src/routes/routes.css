@@ -1,0 +1,37 @@
+/* Route-level styles: login + demo placeholders. */
+
+.login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+  background-color: var(--bg-page);
+}
+.login-card {
+  width: min(420px, 100%);
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  padding: var(--space-8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.login-card__title {
+  font-size: var(--text-2xl);
+  font-weight: 700;
+}
+.login-card__subtitle {
+  color: var(--fg-secondary);
+  margin-top: calc(-1 * var(--space-3));
+}
+.login-card__notice {
+  background-color: var(--color-warning-soft);
+  color: var(--color-warning);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}

@@ -90,6 +90,7 @@ async function merge(req, res, next) {
     const result = await service.mergeContacts({
       tenantPrisma: req.tenantPrisma,
       organizationId: req.auth.organizationId,
+      actorId: req.auth.userId,
       survivorId: targetId,
       duplicateId: contactId,
     });

@@ -44,6 +44,7 @@ async function list(req, res, next) {
         leadSourceId: query.leadSourceId,
         campaignId: query.campaignId,
         linkedLeadId: query.linkedLeadId,
+        unmatched: query.unmatched,
       },
       limit: query.limit,
       offset: query.offset,

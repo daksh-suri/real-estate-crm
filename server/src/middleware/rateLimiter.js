@@ -26,4 +26,18 @@ const refreshLimiter = rateLimit({
   message: { error: { message: 'Too many refresh attempts', status: 429 } },
 });
 
-module.exports = { loginLimiter, refreshLimiter };
+// Upload-URL limiter — signed-URL spam protection (generous in test)
+const uploadLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: config.isTest ? 1000 : 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: { message: 'Too many upload URL requests, please try again later', status: 429 } },
+  keyGenerator: (req) => {
+    const user = (req.auth && req.auth.userId) || '';
+    const ip = req.ip || req.headers['x-forwarded-for'] || 'unknown';
+    return `${ip}:${user}`;
+  },
+});
+
+module.exports = { loginLimiter, refreshLimiter, uploadLimiter };
