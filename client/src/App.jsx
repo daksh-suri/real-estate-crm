@@ -3,7 +3,6 @@ import RequireAuth from './auth/RequireAuth';
 import AppShell from './components/layout/AppShell';
 import { ToastViewport } from './components/ui/ToastViewport';
 import LoginPage from './routes/LoginPage';
-import DashboardPage from './routes/DashboardPage';
 import PlaceholderPage from './routes/PlaceholderPage';
 import EnquiriesPage from './routes/enquiries/EnquiriesPage';
 import EnquiryDetailPage from './routes/enquiries/EnquiryDetailPage';
@@ -13,31 +12,32 @@ import ContactDetailPage from './routes/contacts/ContactDetailPage';
 import DuplicatesPage from './routes/contacts/DuplicatesPage';
 import LeadsPage from './routes/leads/LeadsPage';
 import LeadDetailPage from './routes/leads/LeadDetailPage';
+import ProjectsPage from './routes/properties/ProjectsPage';
+import ProjectDetailPage from './routes/properties/ProjectDetailPage';
+import InventoryPage from './routes/properties/InventoryPage';
+import UnitDetailPage from './routes/properties/UnitDetailPage';
+import DealsPage from './routes/deals/DealsPage';
+import DealDetailPage from './routes/deals/DealDetailPage';
+import VisitsPage from './routes/visits/VisitsPage';
+import VisitDetailPage from './routes/visits/VisitDetailPage';
+import ReservationsPage from './routes/reservations/ReservationsPage';
+import ReservationDetailPage from './routes/reservations/ReservationDetailPage';
+import BookingsPage from './routes/bookings/BookingsPage';
+import BookingDetailPage from './routes/bookings/BookingDetailPage';
+import PaymentsPage from './routes/payments/PaymentsPage';
+import PlanDetailPage from './routes/payments/PlanDetailPage';
+import DocumentsPage from './routes/documents/DocumentsPage';
+import DocumentDetailPage from './routes/documents/DocumentDetailPage';
+import ActivitiesPage from './routes/activities/ActivitiesPage';
+import TasksPage, { TaskDetailPage } from './routes/activities/TasksPage';
+import CommunicationPage from './routes/CommunicationPage';
+import ReportsPage from './routes/reports/ReportsPage';
+import DashboardPage from './routes/dashboard/DashboardPage';
 import './routes/slice.css';
 
-// Declared hierarchy: 17A placeholders remain for later checkpoints; 17B
-// entries below are real screens. No fake data anywhere.
+// Declared hierarchy: 17A placeholders remain for later checkpoints; 17B and
+// 17C entries below are real screens. No fake data anywhere.
 const PLACEHOLDERS = [
-  ['Property', 'Projects', '/app/properties/projects', 'Property screens'],
-  ['Property', 'Project detail', '/app/properties/projects/:id', 'Property screens'],
-  ['Property', 'Inventory', '/app/properties/inventory', 'Property screens'],
-  ['Property', 'Unit detail', '/app/properties/inventory/:id', 'Property screens'],
-  ['Sales', 'Pipeline', '/app/deals', 'Deal pipeline screens'],
-  ['Sales', 'Deal detail', '/app/deals/:id', 'Deal pipeline screens'],
-  ['Sales', 'Site visits', '/app/site-visits', 'Site visit screens'],
-  ['Sales', 'Site visit detail', '/app/site-visits/:id', 'Site visit screens'],
-  ['Sales', 'Reservations', '/app/reservations', 'Reservation screens'],
-  ['Sales', 'Reservation detail', '/app/reservations/:id', 'Reservation screens'],
-  ['Sales', 'Bookings', '/app/bookings', 'Booking screens'],
-  ['Sales', 'Booking detail', '/app/bookings/:id', 'Booking screens'],
-  ['Sales', 'Payments', '/app/payments', 'Payment screens'],
-  ['Sales', 'Payment detail', '/app/payments/:id', 'Payment screens'],
-  ['Operations', 'Documents', '/app/documents', 'Document screens'],
-  ['Operations', 'Document detail', '/app/documents/:id', 'Document screens'],
-  ['Operations', 'Activities', '/app/activities', 'Activity & task screens'],
-  ['Operations', 'Tasks', '/app/tasks', 'Activity & task screens'],
-  ['Communication', 'Communication', '/app/communication', 'Communication screens'],
-  ['Insights', 'Reports', '/app/reports', 'Reports & dashboards'],
   ['Admin', 'Settings', '/app/settings', 'Admin screens'],
   ['Admin', 'Team', '/app/settings/team', 'Admin screens'],
   ['Admin', 'Roles & permissions', '/app/settings/roles-permissions', 'Admin screens'],
@@ -73,6 +73,27 @@ export default function App() {
           <Route path="contacts/:id" element={<ContactDetailPage />} />
           <Route path="leads" element={<LeadsPage />} />
           <Route path="leads/:id" element={<LeadDetailPage />} />
+          <Route path="properties/projects" element={<ProjectsPage />} />
+          <Route path="properties/projects/:id" element={<ProjectDetailPage />} />
+          <Route path="properties/inventory" element={<InventoryPage />} />
+          <Route path="properties/inventory/:id" element={<UnitDetailPage />} />
+          <Route path="deals" element={<DealsPage />} />
+          <Route path="deals/:id" element={<DealDetailPage />} />
+          <Route path="site-visits" element={<VisitsPage />} />
+          <Route path="site-visits/:id" element={<VisitDetailPage />} />
+          <Route path="reservations" element={<ReservationsPage />} />
+          <Route path="reservations/:id" element={<ReservationDetailPage />} />
+          <Route path="bookings" element={<BookingsPage />} />
+          <Route path="bookings/:id" element={<BookingDetailPage />} />
+          <Route path="payments" element={<PaymentsPage />} />
+          <Route path="payments/:id" element={<PlanDetailPage />} />
+          <Route path="documents" element={<DocumentsPage />} />
+          <Route path="documents/:id" element={<DocumentDetailPage />} />
+          <Route path="activities" element={<ActivitiesPage />} />
+          <Route path="tasks" element={<TasksPage />} />
+          <Route path="tasks/:id" element={<TaskDetailPage />} />
+          <Route path="communication" element={<CommunicationPage />} />
+          <Route path="reports" element={<ReportsPage />} />
           {PLACEHOLDERS.map(([eyebrow, title, full, checkpoint]) => (
             <Route
               key={full}

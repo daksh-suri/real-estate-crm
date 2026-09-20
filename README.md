@@ -169,6 +169,36 @@ npm run lint:fix
 npm test
 ```
 
+Backend tests run against a dedicated test database and intentionally wipe
+it (`beforeAll`/`afterAll` cleanup, including organizations). The suite
+rewrites `DATABASE_URL` to `real_estate_crm_test` automatically
+(`server/tests/setup.js`) and refuses to run against any other database —
+never point it at development data.
+
+```bash
+# One-time test database setup (uses your existing Postgres credentials;
+# no passwords are stored anywhere — they come from your root .env)
+psql -h localhost -U postgres -d postgres -c "CREATE DATABASE real_estate_crm_test"
+```
+
+Then baseline the schema once (a plain `migrate deploy` cannot build a fresh
+database here — see the note below), with `DATABASE_URL` pointed at the test
+database:
+
+```bash
+npx prisma db push
+npx prisma migrate resolve --applied <each migration in prisma/migrations, in order>
+```
+
+plus the two hand-written partial-unique indexes `db push` cannot create
+(`leads_open_contact_project_key` from
+`20260918160000_checkpoint_7_lead_open_uniqueness`,
+`documents_live_group_key` from
+`20260919183508_checkpoint_13_document_live_version`).
+
+Development database: `real_estate_crm`. Test database: `real_estate_crm_test`.
+CI already injects the test URL explicitly, so this only affects local runs.
+
 ---
 
 ## Implementation Status

@@ -536,6 +536,32 @@ async function assertReservationIntegrity(organizationId, data, rawPrisma) {
   }
 }
 
+// Create-path guards: unconditional, one per model. Shared by create and the
+// upsert create-path (verified identical). Update/upsert-update paths diverge
+// (conditional + existing-merge) and stay inline — do not fold them in here.
+const GUARDS_CREATE = {
+  teamMembership: assertMembershipTenantIntegrity,
+  user: assertUserRoleTenantIntegrity,
+  rolePermission: assertRolePermissionTenantIntegrity,
+  requirement: assertRequirementContactIntegrity,
+  possibleDuplicate: assertPossibleDuplicateIntegrity,
+  unit: assertUnitProjectIntegrity,
+  campaign: assertCampaignIntegrity,
+  lead: assertLeadIntegrity,
+  enquiry: assertEnquiryIntegrity,
+  roundRobinState: assertRoundRobinIntegrity,
+  deal: assertDealIntegrity,
+  siteVisit: assertSiteVisitIntegrity,
+  reservation: assertReservationIntegrity,
+  booking: assertBookingIntegrity,
+  paymentPlan: assertPaymentPlanIntegrity,
+  paymentObligation: assertPaymentObligationIntegrity,
+  paymentRecord: assertPaymentRecordIntegrity,
+  document: assertDocumentIntegrity,
+  activity: assertActivityIntegrity,
+  task: assertTaskIntegrity,
+};
+
 // ---------------------------------------------------------------------------
 // Wrap a single model delegate with tenant logic
 // ---------------------------------------------------------------------------
@@ -636,67 +662,10 @@ function wrapModel(modelName, rawModel, organizationId, guardClient) {
       // Cross-tenant relationship guards (inside same logical operation,
       // verified before write). These run in the same call but not yet in a
       // DB transaction — callers needing atomicity should use $transaction.
-      if (modelName === 'teamMembership') {
-        await assertMembershipTenantIntegrity(organizationId, data, guards);
-      }
-      if (modelName === 'user') {
-        await assertUserRoleTenantIntegrity(organizationId, data, guards);
-      }
-      if (modelName === 'rolePermission') {
-        await assertRolePermissionTenantIntegrity(organizationId, data, guards);
-      }
-      if (modelName === 'requirement') {
-        await assertRequirementContactIntegrity(organizationId, data, guards);
-      }
-      if (modelName === 'possibleDuplicate') {
-        await assertPossibleDuplicateIntegrity(organizationId, data, guards);
-      }
-      if (modelName === 'unit') {
-        await assertUnitProjectIntegrity(organizationId, data, guards);
-      }
-      if (modelName === 'campaign') {
-        await assertCampaignIntegrity(organizationId, data, guards);
-      }
-      if (modelName === 'lead') {
-        await assertLeadIntegrity(organizationId, data, guards);
-      }
-      if (modelName === 'enquiry') {
-        await assertEnquiryIntegrity(organizationId, data, guards);
-      }
-      if (modelName === 'roundRobinState') {
-        await assertRoundRobinIntegrity(organizationId, data, guards);
-      }
-      if (modelName === 'deal') {
-        await assertDealIntegrity(organizationId, data, guards);
-      }
-      if (modelName === 'siteVisit') {
-        await assertSiteVisitIntegrity(organizationId, data, guards);
-      }
-      if (modelName === 'reservation') {
-        await assertReservationIntegrity(organizationId, data, guards);
-      }
-      if (modelName === 'booking') {
-        await assertBookingIntegrity(organizationId, data, guards);
-      }
-      if (modelName === 'paymentPlan') {
-        await assertPaymentPlanIntegrity(organizationId, data, guards);
-      }
-      if (modelName === 'paymentObligation') {
-        await assertPaymentObligationIntegrity(organizationId, data, guards);
-      }
-      if (modelName === 'paymentRecord') {
-        await assertPaymentRecordIntegrity(organizationId, data, guards);
-      }
-      if (modelName === 'document') {
-        await assertDocumentIntegrity(organizationId, data, guards);
-      }
-      if (modelName === 'activity') {
-        await assertActivityIntegrity(organizationId, data, guards);
-      }
-      if (modelName === 'task') {
-        await assertTaskIntegrity(organizationId, data, guards);
-      }
       // OutboxEvent carries no foreign refs — org scoping is the whole guard.
+      if (GUARDS_CREATE[modelName]) {
+        await GUARDS_CREATE[modelName](organizationId, data, guards);
+      }
 
       return rawModel.create({ ...args, data });
     },
@@ -904,66 +873,9 @@ function wrapModel(modelName, rawModel, organizationId, guardClient) {
         const whereForUpdate = { id: existing.id };
         return rawModel.update({ where: whereForUpdate, data: args.update });
       }
-      // Create path guards
-      if (modelName === 'teamMembership') {
-        await assertMembershipTenantIntegrity(organizationId, create, guards);
-      }
-      if (modelName === 'user') {
-        await assertUserRoleTenantIntegrity(organizationId, create, guards);
-      }
-      if (modelName === 'rolePermission') {
-        await assertRolePermissionTenantIntegrity(organizationId, create, guards);
-      }
-      if (modelName === 'requirement') {
-        await assertRequirementContactIntegrity(organizationId, create, guards);
-      }
-      if (modelName === 'possibleDuplicate') {
-        await assertPossibleDuplicateIntegrity(organizationId, create, guards);
-      }
-      if (modelName === 'unit') {
-        await assertUnitProjectIntegrity(organizationId, create, guards);
-      }
-      if (modelName === 'campaign') {
-        await assertCampaignIntegrity(organizationId, create, guards);
-      }
-      if (modelName === 'lead') {
-        await assertLeadIntegrity(organizationId, create, guards);
-      }
-      if (modelName === 'enquiry') {
-        await assertEnquiryIntegrity(organizationId, create, guards);
-      }
-      if (modelName === 'roundRobinState') {
-        await assertRoundRobinIntegrity(organizationId, create, guards);
-      }
-      if (modelName === 'deal') {
-        await assertDealIntegrity(organizationId, create, guards);
-      }
-      if (modelName === 'siteVisit') {
-        await assertSiteVisitIntegrity(organizationId, create, guards);
-      }
-      if (modelName === 'reservation') {
-        await assertReservationIntegrity(organizationId, create, guards);
-      }
-      if (modelName === 'booking') {
-        await assertBookingIntegrity(organizationId, create, guards);
-      }
-      if (modelName === 'paymentPlan') {
-        await assertPaymentPlanIntegrity(organizationId, create, guards);
-      }
-      if (modelName === 'paymentObligation') {
-        await assertPaymentObligationIntegrity(organizationId, create, guards);
-      }
-      if (modelName === 'paymentRecord') {
-        await assertPaymentRecordIntegrity(organizationId, create, guards);
-      }
-      if (modelName === 'document') {
-        await assertDocumentIntegrity(organizationId, create, guards);
-      }
-      if (modelName === 'activity') {
-        await assertActivityIntegrity(organizationId, create, guards);
-      }
-      if (modelName === 'task') {
-        await assertTaskIntegrity(organizationId, create, guards);
+      // Create path guards (same map as create — unconditional per model).
+      if (GUARDS_CREATE[modelName]) {
+        await GUARDS_CREATE[modelName](organizationId, create, guards);
       }
       return rawModel.create({ data: create });
     },

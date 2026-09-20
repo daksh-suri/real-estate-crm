@@ -52,11 +52,32 @@ async function login(req, res, next) {
   }
 }
 
+// Origin allowlist match for cookie-based refresh CSRF protection. Accepts
+// an exact Origin or a Referer rooted at the configured CORS origin. A
+// wildcard allowed-origin never matches (credentials must never ride '*').
+function originMatchesAllowed(origin, allowed) {
+  if (!origin || !allowed || allowed === '*') return false;
+  const norm = (s) => s.replace(/\/+$/, '');
+  const o = norm(origin);
+  const a = norm(allowed);
+  return o === a || o.startsWith(`${a}/`);
+}
+
 async function refresh(req, res, next) {
   try {
-    // CSRF check for cookie-based refresh: require Origin or custom header
+    // CSRF check for cookie-based refresh: require a present Origin/Referer
+    // that matches the configured allowed origin.
     // If refresh token came from cookie, verify request origin
     const usedCookie = !!(req.cookies && req.cookies[config.cookies.refreshName]);
+    const rawFromBody = req.body ? req.body.refreshToken : undefined;
+    // Production transport is the HttpOnly cookie: a JS-readable body token
+    // bypasses the cookie CSRF check, so it is rejected in production.
+    // (Existing suites run with isProduction=false and are unaffected.)
+    if (rawFromBody && config.isProduction) {
+      const err = new Error('Refresh token in request body is not accepted in production');
+      err.statusCode = 401;
+      return next(err);
+    }
     if (usedCookie && config.isProduction) {
       const origin = req.headers.origin || req.headers.referer || '';
       // In production, origin must be present and match corsOrigin or be same-site
@@ -66,11 +87,14 @@ async function refresh(req, res, next) {
         err.statusCode = 403;
         return next(err);
       }
+      if (!originMatchesAllowed(origin, config.corsOrigin)) {
+        const err = new Error('CSRF check failed: origin mismatch');
+        err.statusCode = 403;
+        return next(err);
+      }
     }
 
-    const body = req.body || {};
     // Allow refreshToken in body or cookie
-    const rawFromBody = body.refreshToken;
     const rawFromCookie = req.cookies ? req.cookies[config.cookies.refreshName] : null;
     const raw = rawFromBody || rawFromCookie;
 
@@ -156,4 +180,4 @@ async function me(req, res, next) {
   }
 }
 
-module.exports = { login, refresh, logout, me };
+module.exports = { login, refresh, logout, me, originMatchesAllowed };

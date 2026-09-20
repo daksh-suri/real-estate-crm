@@ -69,9 +69,5 @@ export function createSessionManager({ rawRequest, doRefresh, onUnauthenticated 
     refreshFailed = false;
   }
 
-  function isRefreshLatched() {
-    return refreshFailed;
-  }
-
-  return { request, resetOnLogin, isRefreshLatched };
+  return { request, resetOnLogin };
 }

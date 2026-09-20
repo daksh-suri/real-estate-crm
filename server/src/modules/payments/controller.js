@@ -8,8 +8,13 @@ const {
   webhookSchema,
 } = require('./validation');
 const service = require('./service');
+const config = require('../../config');
 const { prisma } = require('../../lib/prisma');
 const { IdempotentReplay, idempotencyKeyFrom, assertIdempotencyKey } = require('../../lib/idempotency');
+const {
+  WEBHOOK_SIGNATURE_HEADER,
+  verifyWebhookSignature,
+} = require('../../lib/webhookAuth');
 
 async function createPlan(req, res, next) {
   try {
@@ -77,9 +82,26 @@ async function getRecord(req, res, next) {
 }
 
 // External boundary: no authenticate — the tenant comes from the obligation
-// row, and the gateway eventId is the dedup identity (see DEC-029).
+// row, and the gateway eventId is the dedup identity. Authentication is the
+// V1 HMAC boundary instead (see lib/webhookAuth): when PAYMENT_WEBHOOK_SECRET
+// is configured (always in production — boot fails without it), the raw body
+// must carry a valid signature; unsigned/forged requests are rejected before
+// validation or any state change. The secret itself never leaves the server.
 async function webhook(req, res, next) {
   try {
+    const secret = config.webhook.paymentSecret;
+    if (secret) {
+      const ok = verifyWebhookSignature({
+        rawBody: req.rawBody,
+        signature: req.headers[WEBHOOK_SIGNATURE_HEADER],
+        secret,
+      });
+      if (!ok) {
+        const err = new Error('Invalid webhook signature');
+        err.statusCode = 401;
+        return next(err);
+      }
+    }
     const input = validate(webhookSchema, req.body);
     const result = await service.processWebhook({ rawPrisma: prisma, input });
     return res.status(201).json(result);

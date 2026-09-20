@@ -15,6 +15,7 @@ const crypto = require('crypto');
 // The P2002 path is handled by callers via resolveIdempotencyConflict().
 
 const OPERATION_ENQUIRY_INTAKE = 'ENQUIRY_INTAKE';
+const OPERATION_TASK_CREATE = 'TASK_CREATE';
 
 function canonicalHash(value) {
   return crypto.createHash('sha256').update(JSON.stringify(value === undefined ? null : value)).digest('hex');
@@ -117,6 +118,7 @@ async function idempotentCreate({ client, organizationId, key, operationType, ha
 
 module.exports = {
   OPERATION_ENQUIRY_INTAKE,
+  OPERATION_TASK_CREATE,
   canonicalHash,
   IdempotentReplay,
   IdempotencyConflict,

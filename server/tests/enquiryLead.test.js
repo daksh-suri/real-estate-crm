@@ -34,6 +34,7 @@ describe('Checkpoint 7 — Enquiry Intake + Lead Foundation', () => {
     ['lead', 'update'],
     ['lead', 'delete'],
     ['lead', 'assign'],
+    ['deal', 'create'],
     ['leadSource', 'create'],
     ['leadSource', 'read'],
     ['leadSource', 'update'],
@@ -584,7 +585,17 @@ describe('Checkpoint 7 — Enquiry Intake + Lead Foundation', () => {
       expect(bad.status).toBe(400);
 
       const conv = await request(app).patch(`/leads/${r1.body.lead.id}`).set('Authorization', `Bearer ${token}`).send({ status: 'CONVERTED' });
-      expect(conv.status).toBe(200);
+      expect(conv.status).toBe(400);
+
+      const stillOpen = await request(app).get(`/leads/${r1.body.lead.id}`).set('Authorization', `Bearer ${token}`);
+      expect(stillOpen.status).toBe(200);
+      expect(stillOpen.body.status).toBe('OPEN');
+
+      // Conversion happens exclusively through deal creation.
+      const deal = await request(app).post('/deals').set('Authorization', `Bearer ${token}`).send({ leadId: r1.body.lead.id });
+      expect(deal.status).toBe(201);
+      const converted = await request(app).get(`/leads/${r1.body.lead.id}`).set('Authorization', `Bearer ${token}`);
+      expect(converted.body.status).toBe('CONVERTED');
 
       const terminal = await request(app).patch(`/leads/${r1.body.lead.id}`).set('Authorization', `Bearer ${token}`).send({ status: 'OPEN' });
       expect(terminal.status).toBe(400);

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import './ui.css';
 import { Button } from './controls';
 
@@ -65,41 +65,6 @@ export function ConfirmDialog({ open, title, message, confirmLabel = 'Confirm', 
   );
 }
 
-// Simple dropdown menu (button-triggered, keyboard-dismissable).
-export function Dropdown({ label, children }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef(null);
-
-  useEffect(() => {
-    if (!open) return undefined;
-    const onKey = (e) => {
-      if (e.key === 'Escape') setOpen(false);
-    };
-    const onClick = (e) => {
-      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
-    };
-    document.addEventListener('keydown', onKey);
-    document.addEventListener('mousedown', onClick);
-    return () => {
-      document.removeEventListener('keydown', onKey);
-      document.removeEventListener('mousedown', onClick);
-    };
-  }, [open ]);
-
-  return (
-    <div className="dropdown" ref={ref}>
-      <Button variant="secondary" onClick={() => setOpen((v) => !v)} aria-haspopup="menu" aria-expanded={open}>
-        {label} ▾
-      </Button>
-      {open && (
-        <div className="dropdown__menu" role="menu">
-          {children}
-        </div>
-      )}
-    </div>
-  );
-}
-
 export function Tabs({ tabs, active, onChange }) {
   return (
     <div className="tabs" role="tablist">
@@ -116,16 +81,5 @@ export function Tabs({ tabs, active, onChange }) {
         </button>
       ))}
     </div>
-  );
-}
-
-export function Tooltip({ text, children }) {
-  return (
-    <span className="tooltip" tabIndex={0} aria-label={text}>
-      {children}
-      <span className="tooltip__bubble" role="tooltip">
-        {text}
-      </span>
-    </span>
   );
 }

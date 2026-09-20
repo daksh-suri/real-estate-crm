@@ -26,6 +26,8 @@ const bookingRoutes = require('./modules/bookings/routes');
 const documentRoutes = require('./modules/documents/routes');
 const { activitiesRouter, tasksRouter } = require('./modules/activities/routes');
 const { planRouter, obligationRouter, recordRouter, webhookRouter } = require('./modules/payments/routes');
+const reportRoutes = require('./modules/reports/routes');
+const dashboardRoutes = require('./modules/dashboard/routes');
 const notFoundHandler = require('./middleware/notFoundHandler');
 const errorHandler = require('./middleware/errorHandler');
 
@@ -45,9 +47,19 @@ if (!config.isTest) {
   app.use(morgan('dev'));
 }
 
-// Body & cookie parsing middleware
+// Body & cookie parsing middleware. rawBody is captured for HMAC webhook
+// verification (verified against the exact signed bytes, not re-serialized
+// JSON); all other consumers keep using the parsed body. The 100kb cap is
+// explicit (express default) and sits well above the 20KB rawPayload ceiling.
 app.use(cookieParser());
-app.use(express.json());
+app.use(
+  express.json({
+    limit: '100kb',
+    verify: (req, res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
 app.use(express.urlencoded({ extended: true }));
 
 // Core foundation routes
@@ -76,6 +88,8 @@ app.use('/payment-plans', planRouter);
 app.use('/payment-obligations', obligationRouter);
 app.use('/payment-records', recordRouter);
 app.use('/webhooks', webhookRouter);
+app.use('/dashboard', dashboardRoutes);
+app.use('/reports', reportRoutes);
 app.use('/protected', demoAuthzRoutes);
 
 // 404 handler

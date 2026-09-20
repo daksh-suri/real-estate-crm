@@ -15,10 +15,25 @@ function requireInProduction(name, value) {
   return value;
 }
 
+// Fail closed in production: never silently run prod on dev/local defaults.
+requireInProduction('DATABASE_URL', process.env.DATABASE_URL);
+requireInProduction('PAYMENT_WEBHOOK_SECRET', process.env.PAYMENT_WEBHOOK_SECRET);
+if (isProduction && !process.env.CORS_ORIGIN) {
+  throw new Error('Missing required environment variable CORS_ORIGIN in production');
+}
+
 const accessSecret = process.env.JWT_ACCESS_SECRET || (isProduction ? null : 'dev-access-secret-change-in-production-32chars+');
 
 if (isProduction) {
   requireInProduction('JWT_ACCESS_SECRET', accessSecret);
+  // A checked-in dev default must never authenticate production traffic, even
+  // if NODE_ENV was misconfigured when the secret was chosen.
+  if (accessSecret.startsWith('dev-')) {
+    throw new Error('JWT_ACCESS_SECRET must not be a dev default in production');
+  }
+  if (accessSecret.trim().length < 32) {
+    throw new Error('JWT_ACCESS_SECRET must be at least 32 characters in production');
+  }
 }
 
 const config = {
@@ -40,6 +55,13 @@ const config = {
   // Bcrypt
   bcrypt: {
     cost: parseInt(process.env.BCRYPT_COST || '10', 10), // 10 for test speed, 12 for prod
+  },
+
+  // Payment-gateway webhook (provider-neutral HMAC boundary). Required in
+  // production; when unset outside production, unsigned webhooks are allowed
+  // for local dev/test velocity (existing tests exercise that path).
+  webhook: {
+    paymentSecret: process.env.PAYMENT_WEBHOOK_SECRET || null,
   },
 
   // Cookies
@@ -76,6 +98,10 @@ const config = {
     maxAttempts: parseInt(process.env.WORKER_MAX_ATTEMPTS || '10', 10),
     baseDelayMs: parseInt(process.env.WORKER_BASE_DELAY_MS || '30000', 10),
     maxDelayMs: parseInt(process.env.WORKER_MAX_DELAY_MS || '3600000', 10),
+    // Claim lease: a PROCESSING row whose claimedAt is older than this is
+    // reclaimable (crashed-worker recovery). Must comfortably exceed the
+    // slowest real dispatch; tests backdate claimedAt instead of waiting.
+    claimLeaseMs: parseInt(process.env.WORKER_CLAIM_LEASE_MS || '300000', 10),
     // /health reports worker 'stale' when the heartbeat is older than this.
     heartbeatStaleMs: parseInt(process.env.WORKER_HEARTBEAT_STALE_MS || '300000', 10),
   },

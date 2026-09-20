@@ -7,6 +7,25 @@ import { shortId } from '../../lib/format';
 // fetch each UNIQUE id once (contacts/projects/users) and render names.
 // Bounded by page size, cached per mount — no per-row hooks, no N+1 renders
 // storm, no global store. Falls back to a short-ID link while loading.
+// Pure translation + dedupe: caller fields are { key, kind }; the endpoint
+// ALWAYS comes from KINDS[kind] — never from the caller — so a request can
+// never be built as /undefined/:id. Returns [{ key, endpoint, id }] with one
+// entry per unique endpoint:id pair. Unresolvable kinds and empty ids drop.
+export function buildRelatedRequests(rows, fields) {
+  const wanted = new Map();
+  for (const row of rows || []) {
+    for (const f of fields || []) {
+      const def = KINDS[f.kind];
+      if (!def || !def.endpoint) continue;
+      const id = row[f.key];
+      if (!id) continue;
+      const mapKey = `${def.endpoint}:${id}`;
+      if (!wanted.has(mapKey)) wanted.set(mapKey, { key: f.key, endpoint: def.endpoint, id });
+    }
+  }
+  return [...wanted.values()];
+}
+
 function useRelatedMap(rows, fields) {
   const { api, status } = useAuth();
   const [maps, setMaps] = useState({});
@@ -19,20 +38,14 @@ function useRelatedMap(rows, fields) {
       return undefined;
     }
     let cancelled = false;
-    const wanted = new Map(); // "endpoint:id" -> { endpoint, id }
-    for (const row of rows) {
-      for (const f of fields) {
-        const id = row[f.key];
-        if (id) wanted.set(`${f.endpoint}:${id}`, { endpoint: f.endpoint, id });
-      }
-    }
-    if (wanted.size === 0) {
+    const wanted = buildRelatedRequests(rows, fields);
+    if (wanted.length === 0) {
       setMaps({});
       return undefined;
     }
     (async () => {
       const entries = await Promise.all(
-        [...wanted.values()].map(async ({ endpoint, id }) => {
+        wanted.map(async ({ endpoint, id }) => {
           try {
             const rec = await api(`/${endpoint}/${id}`);
             return [`${endpoint}:${id}`, rec];
@@ -56,12 +69,17 @@ function useRelatedMap(rows, fields) {
 // record is missing/unreadable. `kind` selects endpoint + route prefix.
 const KINDS = {
   contact: { endpoint: 'contacts', route: (id) => `/app/contacts/${id}`, label: (r) => r.name },
-  project: { endpoint: 'projects', route: () => '/app/properties/projects', label: (r) => r.name },
+  project: { endpoint: 'projects', route: (id) => `/app/properties/projects/${id}`, label: (r) => r.name },
   leadSource: { endpoint: 'lead-sources', route: () => null, label: (r) => r.name },
   campaign: { endpoint: 'campaigns', route: () => null, label: (r) => r.name },
   user: { endpoint: null, route: () => null, label: null }, // no user directory endpoint (open gap)
   lead: { endpoint: 'leads', route: (id) => `/app/leads/${id}`, label: (r) => `Lead ${shortId(r.id)}` },
+  deal: { endpoint: 'deals', route: (id) => `/app/deals/${id}`, label: (r) => `Deal ${shortId(r.id)}` },
   enquiry: { endpoint: 'enquiries', route: (id) => `/app/enquiries/${id}`, label: (r) => `Enquiry ${shortId(r.id)}` },
+  reservation: { endpoint: 'reservations', route: (id) => `/app/reservations/${id}`, label: (r) => `Reservation ${shortId(r.id)}` },
+  booking: { endpoint: 'bookings', route: (id) => `/app/bookings/${id}`, label: (r) => `Booking ${shortId(r.id)}` },
+  paymentPlan: { endpoint: 'payment-plans', route: (id) => `/app/payments/${id}`, label: (r) => `Plan ${shortId(r.id)}` },
+  unit: { endpoint: 'units', route: (id) => `/app/properties/inventory/${id}`, label: (r) => r.identifier || `Unit ${shortId(r.id)}` },
 };
 
 export function RelatedName({ kind, id, maps }) {
@@ -76,8 +94,7 @@ export function RelatedName({ kind, id, maps }) {
 }
 
 export function useRelatedNames(rows, fields) {
-  const resolvable = fields.filter((f) => KINDS[f.kind] && KINDS[f.kind].endpoint);
-  const maps = useRelatedMap(rows, resolvable);
+  const maps = useRelatedMap(rows, fields);
   return maps;
 }
 

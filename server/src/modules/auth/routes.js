@@ -7,7 +7,9 @@ const router = express.Router();
 
 router.post('/login', loginLimiter, controller.login);
 router.post('/refresh', refreshLimiter, controller.refresh);
-router.post('/logout', controller.logout);
+// Logout performs an unauthenticated DB write; the generous refresh bucket
+// (60/15m) stops write-spam without affecting legitimate use.
+router.post('/logout', refreshLimiter, controller.logout);
 router.get('/me', authenticate, controller.me);
 
 module.exports = router;

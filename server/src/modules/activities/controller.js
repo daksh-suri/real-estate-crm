@@ -59,14 +59,20 @@ async function getActivity(req, res, next) {
 async function createTask(req, res, next) {
   try {
     const input = validate(createTaskSchema, req.body);
+    const key = idempotencyKeyFrom(req);
+    assertIdempotencyKey(key);
     const task = await service.createTask({
       tenantPrisma: req.tenantPrisma,
       organizationId: req.auth.organizationId,
       actorId: req.auth.userId,
+      idempotencyKey: key,
       input,
     });
     return res.status(201).json(task);
   } catch (err) {
+    if (err instanceof IdempotentReplay) {
+      return res.status(200).json(err.snapshot);
+    }
     return next(err);
   }
 }

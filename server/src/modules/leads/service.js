@@ -5,7 +5,11 @@
 // and manual reassignment.
 
 const ALLOWED_TRANSITIONS = {
-  OPEN: ['CONVERTED', 'DISQUALIFIED'],
+  // Conversion happens exclusively through deal creation
+  // (POST /deals converts OPEN -> CONVERTED atomically with audit).
+  // A generic PATCH to CONVERTED would strand a lead with no Deal and block
+  // the real conversion, so it is rejected here.
+  OPEN: ['DISQUALIFIED'],
   DISQUALIFIED: ['OPEN'],
   CONVERTED: [],
 };
