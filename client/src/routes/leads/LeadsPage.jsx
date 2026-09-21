@@ -15,9 +15,11 @@ export default function LeadsPage() {
   if (filters.status) q.set('status', filters.status);
   const { data, error, loading, retry } = useApi(`/leads?${q.toString()}`);
   const rows = data ?? null;
+  const ASSIGNMENT_LABEL = { AUTO: 'Automatic', MANUAL: 'Manual', UNASSIGNED: 'Unassigned' };
   const maps = useRelatedNames(rows, [
     { key: 'contactId', kind: 'contact' },
     { key: 'projectId', kind: 'project' },
+    { key: 'assignedAgentId', kind: 'user' },
   ]);
 
   const columns = [
@@ -32,12 +34,12 @@ export default function LeadsPage() {
     {
       key: 'assignedAgentId',
       label: 'Assignee',
-      render: (r) => (r.assignedAgentId ? <span title={r.assignedAgentId}>{shortId(r.assignedAgentId)}</span> : <span className="muted">Unassigned</span>),
+      render: (r) => (r.assignedAgentId ? <RelatedName kind="user" id={r.assignedAgentId} maps={maps} /> : <span className="muted">Unassigned</span>),
     },
     {
       key: 'assignmentSource',
       label: 'Source',
-      render: (r) => prettifyEnum(r.assignmentSource),
+      render: (r) => ASSIGNMENT_LABEL[r.assignmentSource] || prettifyEnum(r.assignmentSource),
     },
     { key: 'createdAt', label: 'Created', render: (r) => formatDateTime(r.createdAt) },
   ];

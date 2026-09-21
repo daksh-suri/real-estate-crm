@@ -1,7 +1,31 @@
 const { prisma } = require('../../lib/prisma');
-const { verifyPassword } = require('../../lib/bcrypt');
+const { verifyPassword, hashPassword } = require('../../lib/bcrypt');
 const { signAccessToken } = require('../../lib/jwt');
 const { generateRawRefreshToken, hashRefreshToken, getRefreshExpiryDate } = require('../../lib/refreshToken');
+
+// All authorize pairs — same catalogue as seed-dev / seed-qa (fresh DB has no permissions, signup must bootstrap)
+const BOOTSTRAP_PERMISSIONS = [
+  ['activity', 'create'], ['activity', 'read'],
+  ['task', 'create'], ['task', 'read'], ['task', 'complete'],
+  ['assignmentRule', 'create'], ['assignmentRule', 'read'], ['assignmentRule', 'update'], ['assignmentRule', 'delete'],
+  ['booking', 'create'], ['booking', 'read'], ['booking', 'cancel'],
+  ['campaign', 'create'], ['campaign', 'read'], ['campaign', 'update'], ['campaign', 'delete'],
+  ['contact', 'create'], ['contact', 'read'], ['contact', 'update'], ['contact', 'delete'],
+  ['requirement', 'create'], ['requirement', 'read'], ['requirement', 'update'], ['requirement', 'delete'],
+  ['deal', 'create'], ['deal', 'read'], ['deal', 'update'], ['deal', 'delete'], ['deal', 'transition'],
+  ['team', 'create'], ['team', 'read'], ['team', 'update'], ['team', 'delete'], ['team', 'manage_members'],
+  ['user', 'read'], ['user', 'create'], ['role', 'read'], ['role', 'create'], ['role', 'update'],
+  ['enquiry', 'create'], ['enquiry', 'read'],
+  ['organization', 'read'], ['organization', 'update'],
+  ['leadSource', 'create'], ['leadSource', 'read'], ['leadSource', 'update'], ['leadSource', 'delete'],
+  ['project', 'create'], ['project', 'read'], ['project', 'update'], ['project', 'delete'],
+  ['unit', 'create'], ['unit', 'read'], ['unit', 'update'], ['unit', 'delete'],
+  ['document', 'create'], ['document', 'read'], ['document', 'upload'], ['document', 'verify'], ['document', 'reject'],
+  ['lead', 'create'], ['lead', 'read'], ['lead', 'update'], ['lead', 'delete'], ['lead', 'assign'],
+  ['payment', 'verify'], ['paymentPlan', 'create'], ['paymentPlan', 'read'], ['paymentObligation', 'read'], ['paymentRecord', 'read'],
+  ['reservation', 'create'], ['reservation', 'read'], ['reservation', 'release'],
+  ['siteVisit', 'create'], ['siteVisit', 'read'], ['siteVisit', 'update'], ['siteVisit', 'transition'],
+];
 
 // Generic auth failure — never reveal whether email, org, or password was wrong
 function authFailure() {
@@ -23,12 +47,12 @@ function getSafeUser(user) {
   return safe;
 }
 
-async function findUserForLogin(email, organizationId) {
+async function findUsersByEmail(email) {
   const normalized = email.toLowerCase().trim();
-  const user = await prisma.user.findFirst({
-    where: { email: { equals: normalized, mode: 'insensitive' }, organizationId, deletedAt: null },
+  const users = await prisma.user.findMany({
+    where: { email: { equals: normalized, mode: 'insensitive' }, deletedAt: null },
   });
-  return user;
+  return users;
 }
 
 async function createRefreshTokenRecord({ userId, organizationId, raw, expiresAt, replacedById = null }) {
@@ -45,29 +69,31 @@ async function createRefreshTokenRecord({ userId, organizationId, raw, expiresAt
   return record;
 }
 
-async function login({ email, password, organizationId }) {
-  // Normalize email
+async function login({ email, password }) {
   const normalizedEmail = email.toLowerCase().trim();
+  const users = await findUsersByEmail(normalizedEmail);
+  if (users.length === 0) throw authFailure();
+  if (users.length > 1) {
+    const err = new Error('Multiple accounts found for this email — contact support');
+    err.statusCode = 401;
+    throw err;
+  }
+  const user = users[0];
 
   // Verify organization exists (global)
-  const org = await prisma.organization.findUnique({ where: { id: organizationId } });
+  const org = await prisma.organization.findUnique({ where: { id: user.organizationId } });
   if (!org) throw authFailure();
-
-  const user = await findUserForLogin(normalizedEmail, organizationId);
-  if (!user) throw authFailure();
 
   // Status checks — DEACTIVATED must not be able to login
   if (user.status === 'DEACTIVATED' || user.deletedAt) {
     throw deactivatedFailure();
   }
-  // ON_LEAVE is allowed per architecture — not treated as DEACTIVATED
 
   if (!user.passwordHash) throw authFailure();
 
   const passwordOk = await verifyPassword(password, user.passwordHash);
   if (!passwordOk) throw authFailure();
 
-  // Issue tokens
   const accessToken = signAccessToken({ userId: user.id, organizationId: user.organizationId });
   const rawRefresh = generateRawRefreshToken();
   const expiresAt = getRefreshExpiryDate();
@@ -85,6 +111,101 @@ async function login({ email, password, organizationId }) {
     refreshToken: rawRefresh,
     refreshRecord,
   };
+}
+
+async function signup({ organizationName, name, email, password }) {
+  const normalizedEmail = email.toLowerCase().trim();
+  const orgName = organizationName.trim();
+  const userName = name.trim();
+
+  // Global email uniqueness for V1 login without organizationId — prevent cross-org duplicates at signup
+  const existingEmail = await prisma.user.findFirst({
+    where: { email: { equals: normalizedEmail, mode: 'insensitive' }, deletedAt: null },
+  });
+  if (existingEmail) {
+    const err = new Error('Email already in use');
+    err.statusCode = 409;
+    throw err;
+  }
+
+  const hash = await hashPassword(password);
+
+  // Ensure global permissions exist (idempotent, outside transaction to avoid holding lock during upserts)
+  const permRows = [];
+  for (const [resource, action] of BOOTSTRAP_PERMISSIONS) {
+    const p = await prisma.permission.upsert({
+      where: { resource_action: { resource, action } },
+      update: {},
+      create: { resource, action },
+    });
+    permRows.push(p);
+  }
+
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      // Re-check global email inside transaction to close race (outside check passed, but concurrent signup could still race)
+      const existingInside = await tx.user.findFirst({ where: { email: { equals: normalizedEmail, mode: 'insensitive' }, deletedAt: null } });
+      if (existingInside) {
+        const err = new Error('Email already in use');
+        err.statusCode = 409;
+        throw err;
+      }
+      const org = await tx.organization.create({ data: { name: orgName } });
+      const role = await tx.role.create({ data: { name: 'Admin', organizationId: org.id } });
+      for (const perm of permRows) {
+        await tx.rolePermission.create({
+          data: { organizationId: org.id, roleId: role.id, permissionId: perm.id, scope: 'ORGANIZATION' },
+        });
+      }
+      const user = await tx.user.create({
+        data: {
+          name: userName,
+          email: normalizedEmail,
+          passwordHash: hash,
+          organizationId: org.id,
+          roleId: role.id,
+          status: 'ACTIVE',
+        },
+      });
+      return { org, role, user };
+    }, { timeout: 10000, maxWait: 5000 });
+
+    const accessToken = signAccessToken({ userId: result.user.id, organizationId: result.org.id });
+    const rawRefresh = generateRawRefreshToken();
+    const expiresAt = getRefreshExpiryDate();
+    const refreshRecord = await createRefreshTokenRecord({
+      userId: result.user.id,
+      organizationId: result.org.id,
+      raw: rawRefresh,
+      expiresAt,
+    });
+
+    return {
+      organization: result.org,
+      user: getSafeUser(result.user),
+      accessToken,
+      refreshToken: rawRefresh,
+      refreshRecord,
+    };
+  } catch (err) {
+    if (err.code === 'P2002') {
+      const target = err.meta && err.meta.target ? String(err.meta.target) : '';
+      if (target.includes('organizations') || target.includes('name')) {
+        const e = new Error('Organization name already taken');
+        e.statusCode = 409;
+        throw e;
+      }
+      if (target.includes('users') || target.includes('email')) {
+        const e = new Error('Email already in use');
+        e.statusCode = 409;
+        throw e;
+      }
+      const e = new Error('Duplicate entry');
+      e.statusCode = 409;
+      throw e;
+    }
+    throw err;
+  }
 }
 
 async function refresh({ rawRefreshToken }) {
@@ -247,6 +368,7 @@ async function revokeAllForUser(userId) {
 
 module.exports = {
   login,
+  signup,
   refresh,
   logout,
   revokeAllUserTokens,

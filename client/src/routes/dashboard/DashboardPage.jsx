@@ -131,11 +131,16 @@ export default function DashboardPage() {
               title="Upcoming Site Visits"
               loading={false}
               error={null}
-              empty="No upcoming visits."
+              empty={(data.upcomingVisitsList ?? []).length === 0 ? 'No upcoming visits.' : null}
             >
-              <EntityLink to="/app/site-visits">
-                <span className="muted" style={{ fontSize: '0.85rem' }}>View all site visits →</span>
-              </EntityLink>
+              <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginBottom: '0.5rem' }}>
+                <EntityLink to="/app/site-visits">
+                  <span className="muted" style={{ fontSize: '0.85rem' }}>View all site visits →</span>
+                </EntityLink>
+                <EntityLink to="/app/calendar">
+                  <span className="muted" style={{ fontSize: '0.85rem' }}>View calendar →</span>
+                </EntityLink>
+              </div>
               <Table
                 columns={visitColumns}
                 rows={data.upcomingVisitsList}
@@ -148,7 +153,7 @@ export default function DashboardPage() {
               title="Recent Activity"
               loading={false}
               error={null}
-              empty="No activity logged yet."
+              empty={(data.recentActivities ?? []).length === 0 ? 'No activity logged yet.' : null}
             >
               <EntityLink to="/app/activities">
                 <span className="muted" style={{ fontSize: '0.85rem' }}>View all activities →</span>

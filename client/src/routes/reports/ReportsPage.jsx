@@ -129,7 +129,7 @@ export default function ReportsPage() {
 
       {!rangeInvalid && tab === 'pipeline' && (
         <>
-          <Section title="Deals" loading={deals.loading} error={deals.error} retry={deals.retry} empty={!deals.data || deals.data.created === 0}>
+          <Section title="Deals" loading={deals.loading} error={deals.error} retry={deals.retry}>
             {deals.data && (
               <>
                 <Tiles tiles={[{ label: 'Deals created', value: deals.data.created }]} />
@@ -137,7 +137,7 @@ export default function ReportsPage() {
               </>
             )}
           </Section>
-          <Section title="Leads" loading={leads.loading} error={leads.error} retry={leads.retry} empty={!leads.data || leads.data.created === 0}>
+          <Section title="Leads" loading={leads.loading} error={leads.error} retry={leads.retry}>
             {leads.data && (
               <>
                 <Tiles tiles={[{ label: 'Leads created', value: leads.data.created }]} />
@@ -152,7 +152,7 @@ export default function ReportsPage() {
 
       {!rangeInvalid && tab === 'operations' && (
         <>
-          <Section title="Site visits" loading={visits.loading} error={visits.error} retry={visits.retry} empty={!visits.data || visits.data.scheduled === 0}>
+          <Section title="Site visits" loading={visits.loading} error={visits.error} retry={visits.retry}>
             {visits.data && (
               <>
                 <Tiles tiles={[{ label: 'Scheduled', value: visits.data.scheduled }, { label: 'Cancelled', value: visits.data.cancelled }]} />
@@ -160,7 +160,7 @@ export default function ReportsPage() {
               </>
             )}
           </Section>
-          <Section title="Bookings & holds" loading={bookings.loading} error={bookings.error} retry={bookings.retry} empty={!bookings.data || bookings.data.booked === 0}>
+          <Section title="Bookings & holds" loading={bookings.loading} error={bookings.error} retry={bookings.retry}>
             {bookings.data && (
               <>
                 <Tiles tiles={[{ label: 'Booked', value: bookings.data.booked }, { label: 'Cancelled', value: bookings.data.cancelled }]} />
@@ -168,7 +168,7 @@ export default function ReportsPage() {
               </>
             )}
           </Section>
-          <Section title="Tasks" loading={tasks.loading} error={tasks.error} retry={tasks.retry} empty={!tasks.data || tasks.data.created === 0}>
+          <Section title="Tasks" loading={tasks.loading} error={tasks.error} retry={tasks.retry}>
             {tasks.data && (
               <>
                 <Tiles tiles={[{ label: 'Created', value: tasks.data.created }, { label: 'Overdue now', value: tasks.data.overdueNow }]} />
@@ -176,7 +176,7 @@ export default function ReportsPage() {
               </>
             )}
           </Section>
-          <Section title="Activities" loading={activities.loading} error={activities.error} retry={activities.retry} empty={!activities.data || activities.data.total === 0}>
+          <Section title="Activities" loading={activities.loading} error={activities.error} retry={activities.retry}>
             {activities.data && (
               <>
                 <Tiles tiles={[{ label: 'Logged', value: activities.data.total }]} />
@@ -189,7 +189,7 @@ export default function ReportsPage() {
 
       {!rangeInvalid && tab === 'money' && (
         <>
-          <Section title="Payments" loading={payments.loading} error={payments.error} retry={payments.retry} empty={!payments.data || payments.data.obligationsByStatus.length === 0}>
+          <Section title="Payments" loading={payments.loading} error={payments.error} retry={payments.retry}>
             {payments.data && (
               <>
                 <Tiles tiles={[{ label: 'Overdue now', value: payments.data.overdueNow }, { label: 'Collected', value: String(payments.data.collected ?? 0) }]} />
@@ -200,7 +200,7 @@ export default function ReportsPage() {
           <Section title="Inventory (snapshot)" loading={inventory.loading} error={inventory.error} retry={inventory.retry} empty={!inventory.data || inventory.data.unitsByAvailability.length === 0}>
             {inventory.data && <DistBars items={inventory.data.unitsByAvailability} labelKey="availabilityStatus" />}
           </Section>
-          <Section title="Documents" loading={documents.loading} error={documents.error} retry={documents.retry} empty={!documents.data || documents.data.byStatus.length === 0}>
+          <Section title="Documents" loading={documents.loading} error={documents.error} retry={documents.retry}>
             {documents.data && (
               <>
                 <Tiles tiles={[{ label: 'Reviewed', value: documents.data.reviewed }]} />
@@ -208,7 +208,7 @@ export default function ReportsPage() {
               </>
             )}
           </Section>
-          <Section title="Contacts" loading={contacts.loading} error={contacts.error} retry={contacts.retry} empty={!contacts.data || contacts.data.created === 0}>
+          <Section title="Contacts" loading={contacts.loading} error={contacts.error} retry={contacts.retry}>
             {contacts.data && (
               <>
                 <Tiles tiles={[{ label: 'Created', value: contacts.data.created }, { label: 'Duplicates pending', value: contacts.data.duplicatesPending }]} />

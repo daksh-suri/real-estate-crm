@@ -72,7 +72,7 @@ const KINDS = {
   project: { endpoint: 'projects', route: (id) => `/app/properties/projects/${id}`, label: (r) => r.name },
   leadSource: { endpoint: 'lead-sources', route: () => null, label: (r) => r.name },
   campaign: { endpoint: 'campaigns', route: () => null, label: (r) => r.name },
-  user: { endpoint: null, route: () => null, label: null }, // no user directory endpoint (open gap)
+  user: { endpoint: 'users', route: () => null, label: (r) => r.name }, // no user detail page — plain name
   lead: { endpoint: 'leads', route: (id) => `/app/leads/${id}`, label: (r) => `Lead ${shortId(r.id)}` },
   deal: { endpoint: 'deals', route: (id) => `/app/deals/${id}`, label: (r) => `Deal ${shortId(r.id)}` },
   enquiry: { endpoint: 'enquiries', route: (id) => `/app/enquiries/${id}`, label: (r) => `Enquiry ${shortId(r.id)}` },

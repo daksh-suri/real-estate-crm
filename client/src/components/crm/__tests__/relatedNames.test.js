@@ -61,6 +61,13 @@ describe('KINDS label mapping (all supported kinds)', () => {
     expect(KINDS.lead.label({ id: '12345678-abcd' })).toBe('Lead 12345678');
     expect(KINDS.deal.label({ id: '12345678-abcd' })).toBe('Deal 12345678');
     expect(KINDS.enquiry.label({ id: '12345678-abcd' })).toBe('Enquiry 12345678');
-    expect(KINDS.user.endpoint).toBeNull(); // no user directory — open gap
+    expect(KINDS.user.endpoint).toBe('users'); // Checkpoint 18 directory
+    expect(KINDS.user.label({ name: 'Asha' })).toBe('Asha');
+    expect(KINDS.user.route('any-id')).toBeNull(); // no user detail page — plain name
+  });
+
+  test('user ids resolve through the directory endpoint', () => {
+    const reqs = buildRelatedRequests([{ assignedTo: 'u1' }], [{ key: 'assignedTo', kind: 'user' }]);
+    expect(reqs).toEqual([{ key: 'assignedTo', endpoint: 'users', id: 'u1' }]);
   });
 });

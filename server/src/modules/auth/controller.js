@@ -1,4 +1,4 @@
-const { validate, loginSchema, refreshSchema, logoutSchema } = require('./validation');
+const { validate, loginSchema, signupSchema, refreshSchema, logoutSchema } = require('./validation');
 const authService = require('./service');
 const { prisma } = require('../../lib/prisma');
 const config = require('../../config');
@@ -30,23 +30,42 @@ function getRefreshTokenFromRequest(req) {
 
 async function login(req, res, next) {
   try {
-    const { email, password, organizationId } = validate(loginSchema, req.body);
-    const result = await authService.login({ email, password, organizationId });
+    const { email, password } = validate(loginSchema, req.body);
+    const result = await authService.login({ email, password });
 
     setRefreshCookie(res, result.refreshToken);
 
-    // Do not return refresh token in body — HttpOnly cookie is the transport
-    // For test convenience we also include it in body when in test env, but document as not for prod
     const responseBody = {
       accessToken: result.accessToken,
       user: result.user,
     };
-    // In test, include refreshToken to allow agent without cookie jar to test
     if (config.isTest) {
       responseBody.refreshToken = result.refreshToken;
     }
 
     return res.status(200).json(responseBody);
+  } catch (err) {
+    return next(err);
+  }
+}
+
+async function signup(req, res, next) {
+  try {
+    const { organizationName, name, email, password } = validate(signupSchema, req.body);
+    const result = await authService.signup({ organizationName, name, email, password });
+
+    setRefreshCookie(res, result.refreshToken);
+
+    const responseBody = {
+      accessToken: result.accessToken,
+      user: result.user,
+      organization: result.organization,
+    };
+    if (config.isTest) {
+      responseBody.refreshToken = result.refreshToken;
+    }
+
+    return res.status(201).json(responseBody);
   } catch (err) {
     return next(err);
   }
@@ -180,4 +199,4 @@ async function me(req, res, next) {
   }
 }
 
-module.exports = { login, refresh, logout, me, originMatchesAllowed };
+module.exports = { login, signup, refresh, logout, me, originMatchesAllowed };

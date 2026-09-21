@@ -84,11 +84,18 @@ function AccessButton({ documentId }) {
     if (pending) return;
     setPending(true);
     setError(null);
+    // Open synchronously to preserve the user gesture; navigate after await.
+    const w = window.open('', '_blank', 'noopener,noreferrer');
+    if (!w) {
+      setError({ message: 'Pop-up blocked. Allow pop-ups for this site and try again.' });
+      setPending(false);
+      return;
+    }
     try {
-      // Short-lived bearer URL, used immediately and never stored.
       const { url } = await api(`/documents/${documentId}/access-url`, { method: 'POST' });
-      window.open(url, '_blank', 'noopener');
+      w.location.href = url;
     } catch (err) {
+      w.close();
       setError(err);
     } finally {
       setPending(false);

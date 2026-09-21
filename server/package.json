@@ -9,6 +9,8 @@
     "dev:worker": "nodemon src/worker.js",
     "worker": "node src/worker.js",
     "seed:dev": "node scripts/seed-dev.js",
+    "seed:qa": "node scripts/seed-qa.js",
+    "seed:dev:qa": "node scripts/seed-dev-qa.js",
     "test": "jest --runInBand --detectOpenHandles"
   },
   "dependencies": {
