@@ -11,6 +11,7 @@ Detailed decisions live in `docs/`:
 
 ## Core Capabilities (V1 Implemented)
 
+- **Auth / Onboarding** — fresh-install `POST /auth/signup` (`organizationName, name, email, password, confirmPassword`) → `Organization` + `Admin` (all perms) + `User` atomically, auto-login `accessToken`+`HttpOnly refreshToken` → `/app/dashboard`; `POST /auth/login {email, password}` (no `organizationId`), `POST /auth/refresh`/`logout`, `GET /auth/me`.
 - **Dashboard** — operational overview (`GET /dashboard`): open leads / active deals / upcoming visits / reservations / tasks, overdue/expiring attention tiles, stage & availability distributions, upcoming visits + recent activities (RelatedName resolution).
 - **Enquiries** — append-only intake events (`POST /enquiries` unified `PORTAL/WALK_IN/PHONE/OWNED_FORM`, `rawPayload` capped 20KB, `unmatched` filter, `IdempotencyKey` replay/409).
 - **Leads** — working opportunities (`OPEN/CONVERTED/DISQUALIFIED`, one `OPEN` per `org+contact+project` via partial index, project-less always separate). Created only via intake; `PATCH` `OPEN↔DISQUALIFIED`, `POST /leads/:id/reassign` `lead:assign` (`MANUAL` wins), `ROUND_ROBIN` auto-assignment (team `FOR UPDATE` counter) + human-readable `Automatic/Manual/Unassigned`.
@@ -25,7 +26,7 @@ Detailed decisions live in `docs/`:
 - **Activities / Tasks** — `Activity` immutable log (no PATCH/DELETE, `type/outcome` free-form, optional atomic `followUpTask`), `Task OPEN→DONE` (`OVERDUE` derived `OPEN+past dueAt`), `POST /tasks/:id/complete` 409 repeat.
 - **Communication** — contact-scoped `GET /activities?contactId=` timeline, `INBOUND_/OUTBOUND_` outcome prefix for direction, `LogActivityButton` recycled.
 - **Reports** — 10 `GET /reports/*` (`deals/leads/visits/bookings/payments/tasks/activities/inventory/documents/contacts`) `tenantPrisma.groupBy/count`, half-open `[from,to)` UTC `toRangeStart/End`, range vs snapshot preserved (inventory snapshot ignores range, `DistBars` CSS).
-- **Settings** — `Team` (`GET /users?search&status&teamId` + `POST /users` employee provisioning bcrypt, `Roles` read-only `GET /roles` + `/roles/permissions/catalogue` domain-grouped `scope` badges, `Lead Sources`, `Campaigns`, hidden `Assignment Rules` (`ROUND_ROBIN {teamId}` only, backend-controlled counter)). `GET /users/:id` closes `KINDS.user` gap for `RelatedName`.
+- **Settings** — `Team` (`GET /users?search&status&teamId` + `POST /users` employee provisioning bcrypt, `Roles` `GET /roles` + `/roles/permissions/catalogue` + `POST /roles {name, permissions[]}` / `PUT /roles/:id/permissions` atomic `role:create/update` gated `ORGANIZATION`, custom names, domain-grouped `scope` badges, `Lead Sources`, `Campaigns`, hidden `Assignment Rules` (`ROUND_ROBIN {teamId}` only, backend-controlled counter)). `GET /users/:id` closes `KINDS.user` gap for `RelatedName`.
 - **Calendar** — internal month grid + agenda (no Google/Outlook sync): primary `SiteVisit.scheduledAt/duration/status` + optional `Task.dueAt` (OPEN only), `GET /site-visits?from=&to=` window, native `Date` grid, click → `/app/site-visits/:id`, responsive `1.6fr 1fr → 1fr @900px`. Dashboard links to `View calendar →`.
 - **Background / Audit** — `OutboxEvent` (`PENDING/PROCESSING/PROCESSED/FAILED`, `FOR UPDATE SKIP LOCKED` claim, `min(30s·2^(n-1),1h)` 10 attempts) + `WorkerHeartbeat` (`id:main`), `node src/worker.js` scheduler (expiry 60s + outbox 10s), notification lanes `INTERNAL/CUSTOMER` (customer re-reads `communicationConsent OPTED_OUT` at dispatch).
 
@@ -37,13 +38,13 @@ Detailed decisions live in `docs/`:
 
 **Tenant isolation:** `Organization` is tenant root; every tenant table carries indexed `organizationId` FK. `createTenantPrisma(organizationId)` injects `organizationId` + `deletedAt:null` on reads; client-supplied `organizationId` never trusted (JWT→DB row). Cross-tenant reads 404, writes 403. Inside transactions, `wrapModel(..., rawTx)` sees uncommitted rows.
 
-**Auth:** JWT access (15m) in memory + HttpOnly `refreshToken` cookie, `SELECT ... FOR UPDATE` rotation, rate limit `login 20/15m` (`ip`-only), CSRF `Origin/Referer` on refresh in prod, `express.json({limit:'100kb', verify: rawBody for HMAC})`.
+**Auth:** Fresh-install `POST /auth/signup {organizationName, name, email, password, confirmPassword}` creates `Organization` + `Admin` role (all perms `ORGANIZATION`) + `User` in one `prisma.$transaction` (P2002→409, global `email` uniqueness for V1 login `email+password` only). JWT access (15m) in memory + HttpOnly `refreshToken` cookie, `SELECT ... FOR UPDATE` rotation, rate limit `login/signup 20/15m` (`ip`-only), CSRF `Origin/Referer` on refresh in prod, `express.json({limit:'100kb', verify: rawBody for HMAC})`.
 
 **Background:** Postgres-backed jobs (no Redis/Elasticsearch for correctness), `R2` via `@aws-sdk/client-s3` + `s3-request-presigner` (S3-compatible, bucket `PRIVATE`, presigned 15m, `objectExists` HeadObject).
 
 ---
 
-## Setup
+## Setup — Fresh Install
 
 **Prerequisites:** Node 18+ (20 recommended), npm 9+, PostgreSQL 14+.
 
@@ -78,8 +79,9 @@ VITE_API_URL=http://localhost:5000
 **Database:** Prisma is source of truth; `DATABASE_URL` from `.env`. Migrations are the 19 files in `prisma/migrations` (including hand-written partial indexes `leads_open_contact_project_key` and `documents_live_group_key`). `?schema=public` is not required (public is default) — omitted for simplicity.
 
 ```bash
-# dev DB (now contains deterministic demo dataset from QA seed)
+# 1. create empty database
 psql -h localhost -U postgres -d postgres -c "CREATE DATABASE real_estate_crm"
+# 2. apply migrations (creates all tables, no seed required)
 npx prisma migrate deploy   # or: npm run prisma:migrate
 
 # test DB (one-time, before npm test) — can be recreated if deleted: same CREATE + migrate deploy
@@ -87,18 +89,21 @@ psql -h localhost -U postgres -d postgres -c "CREATE DATABASE real_estate_crm_te
 # tests auto-rewrite DATABASE_URL to real_estate_crm_test (server/tests/setup.js, refuses otherwise) and wipe it
 ```
 
-**Seeds:**
+**Seeds (optional):** A seed is **not required** for normal onboarding. The empty database after `migrate deploy` is sufficient — create the first organization via **Signup**. Seeds are for dev convenience only:
 
 ```bash
-npm run seed:dev --workspace=server        # legacy org "abc" + Admin 18dakshsuri@gmail.com (dev only)
-npm run seed:dev:qa --workspace=server    # deterministic demo dataset — makes real_estate_crm mirror the former QA dataset (org "qa" + 5 users QaPass123!, 4 sources/2 campaigns/2 projects/6 units/7 contacts/6 enquiries/4 leads/3 deals/5 visits/6 reservations/1 booking/1 plan/3 obligations/4 docs+version chain/4 activities/3 tasks — fail-closed unless DATABASE_URL targets real_estate_crm and host is localhost)
-npm run seed:qa --workspace=server        # isolated QA variant — same dataset but targets real_estate_crm_qa (fail-closed); kept for reference but not required after consolidation
+npm run seed:dev --workspace=server        # legacy org "abc" + Admin 18dakshsuri@gmail.com (dev only, upsert, never deletes)
+npm run seed:dev:qa --workspace=server    # deterministic demo dataset — makes real_estate_crm mirror the former QA dataset (org "qa" + 5 users QaPass123!, ... — fail-closed unless DATABASE_URL targets real_estate_crm and host is localhost)
+npm run seed:qa --workspace=server        # isolated QA variant — same dataset but targets real_estate_crm_qa (fail-closed); kept for reference
 ```
 
 **Run:**
 
 ```bash
 npm run dev              # concurrently: server :5000 (nodemon) + client :5173 (Vite)
+# then open Signup:
+# http://localhost:5173/signup → Organization name + Name + Email + Password → Create workspace → /app/dashboard
+# existing users: http://localhost:5173/login → Email + Password → /app/dashboard
 npm run dev:server       # backend only
 npm run dev:client       # frontend only
 npm run worker --workspace=server        # background scheduler (separate process, graceful SIGTERM)
@@ -130,9 +135,9 @@ Backend tests auto-rewrite `DATABASE_URL` to `real_estate_crm_test` and wipe it 
 
 ## Environment Separation
 
-- **Development** `real_estate_crm` (`.env` `DATABASE_URL`) — local app development, `seed:dev` safe to re-run (upserts, never deletes CRM data).
-- **Test** `real_estate_crm_test` (auto) — `server/tests/setup.js` rewrites pathname, refuses any other DB; `npm test` wipes it.
-- **QA** `real_estate_crm_qa` (isolated) — `seed:qa` fail-closed (`new URL(DATABASE_URL).pathname === 'real_estate_crm_qa'` else throw) and scoped deletes `WHERE organizationId=qaOrg.id`; `npm run seed:qa` is deterministic and repeatable.
+- **Development** `real_estate_crm` (`.env` `DATABASE_URL`) — empty after `migrate deploy`; create first organization via **Signup** (`/signup` → org + Admin → auto-login). `seed:dev` / `seed:dev:qa` are optional dev conveniences (upsert / deterministic demo).
+- **Test** `real_estate_crm_test` (auto) — `server/tests/setup.js` rewrites pathname, refuses any other DB; `npm test` wipes it. Recreate if deleted: `psql -c "CREATE DATABASE real_estate_crm_test"` + `DATABASE_URL=.../real_estate_crm_test npx prisma migrate deploy`.
+- **QA** `real_estate_crm_qa` — previously isolated (`seed:qa` fail-closed); removed after consolidation. Dev now holds deterministic demo via `seed:dev:qa` if needed. Disposable fresh DB for verification: `createdb real_estate_crm_qa_fresh` + `DATABASE_URL=.../real_estate_crm_qa_fresh npx prisma migrate deploy` + `POST /auth/signup`.
 
 Do not `prisma migrate reset`, `DROP DATABASE`, or `DELETE FROM` without an isolated disposable DB and explicit justification.
 

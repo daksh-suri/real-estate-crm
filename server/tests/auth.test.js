@@ -163,12 +163,12 @@ describe('Checkpoint 3 — Authentication & Authorization (comprehensive)', () =
     });
 
     test('5. Missing credentials fail validation', async () => {
-      const r1 = await request(app).post('/auth/login').send({ email: 'activea@test.com', organizationId: orgA.id });
+      const r1 = await request(app).post('/auth/login').send({ email: 'activea@test.com' });
       expect(r1.status).toBe(400);
-      const r2 = await request(app).post('/auth/login').send({ password: plainActiveA, organizationId: orgA.id });
+      const r2 = await request(app).post('/auth/login').send({ password: plainActiveA });
       expect(r2.status).toBe(400);
       const r3 = await request(app).post('/auth/login').send({ email: 'activea@test.com', password: plainActiveA });
-      expect(r3.status).toBe(400);
+      expect(r3.status).toBe(200);
     });
 
     test('6. bcrypt hashing/verification works', async () => {
@@ -841,11 +841,11 @@ describe('Checkpoint 3 — Authentication & Authorization (comprehensive)', () =
     });
 
     test('55. Authentication errors do not leak account existence', async () => {
-      const r1 = await request(app).post('/auth/login').send({ email: 'nope@test.com', password: 'x', organizationId: orgA.id });
-      const r2 = await request(app).post('/auth/login').send({ email: 'activea@test.com', password: 'wrong', organizationId: orgA.id });
-      const r3 = await request(app).post('/auth/login').send({ email: 'activea@test.com', password: plainActiveA, organizationId: '00000000-0000-4000-a000-000000000000' });
+      const r1 = await request(app).post('/auth/login').send({ email: 'nope@test.com', password: 'x' });
+      const r2 = await request(app).post('/auth/login').send({ email: 'activea@test.com', password: 'wrong' });
       expect(r1.body.error.message).toBe(r2.body.error.message);
-      expect(r2.body.error.message).toBe(r3.body.error.message);
+      expect(r1.status).toBe(401);
+      expect(r2.status).toBe(401);
     });
 
     test('56. JWT signature verification is enforced', async () => {
@@ -936,12 +936,12 @@ describe('Checkpoint 3 — Authentication & Authorization (comprehensive)', () =
     });
 
     test('65. Input validation authoritative', async () => {
-      const badEmail = await request(app).post('/auth/login').send({ email: 'not-an-email', password: plainActiveA, organizationId: orgA.id });
+      const badEmail = await request(app).post('/auth/login').send({ email: 'not-an-email', password: plainActiveA });
       expect(badEmail.status).toBe(400);
-      const badOrg = await request(app).post('/auth/login').send({ email: 'activea@test.com', password: plainActiveA, organizationId: 'not-a-uuid' });
-      expect(badOrg.status).toBe(400);
       const missing = await request(app).post('/auth/login').send({});
       expect(missing.status).toBe(400);
+      const ok = await request(app).post('/auth/login').send({ email: 'activea@test.com', password: plainActiveA });
+      expect(ok.status).toBe(200);
     });
   });
 

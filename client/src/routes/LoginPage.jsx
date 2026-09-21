@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Navigate, useLocation, useNavigate } from 'react-router-dom';
+import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { APP_NAME } from '../config';
 import { Button, Field, Input } from '../components/ui/controls';
@@ -14,7 +14,6 @@ export default function LoginPage() {
   const location = useLocation();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [organizationId, setOrganizationId] = useState('');
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
   const expired = new URLSearchParams(location.search).get('expired') === '1';
@@ -28,7 +27,7 @@ export default function LoginPage() {
     setError(null);
     setBusy(true);
     try {
-      await login({ email: email.trim(), password, organizationId: organizationId.trim() });
+      await login({ email: email.trim(), password });
       const from = location.state?.from || '/app/dashboard';
       navigate(from, { replace: true });
     } catch (err) {
@@ -60,21 +59,18 @@ export default function LoginPage() {
             autoComplete="current-password"
           />
         </Field>
-        <Field
-          label="Organization ID"
-          hint="Temporary: paste your organization ID until org discovery lands (open item)."
-        >
-          <Input value={organizationId} onChange={(e) => setOrganizationId(e.target.value)} required placeholder="UUID" />
-        </Field>
         {error && (
           <ErrorState
-            message={error.status === 401 ? 'Invalid email, password, or organization.' : error.message}
+            message={error.status === 401 ? 'Invalid email or password.' : error.message}
             details={error.details ? JSON.stringify(error.details) : null}
           />
         )}
         <Button variant="primary" size="lg" type="submit" disabled={busy || status === 'booting'}>
           {busy ? 'Signing in…' : 'Sign in'}
         </Button>
+        <p className="login-card__footer">
+          Don’t have an account? <Link to="/signup">Sign up</Link>
+        </p>
       </form>
     </div>
   );

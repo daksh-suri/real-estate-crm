@@ -39,7 +39,7 @@ describe('roles read-only matrix', () => {
         passwordHash: await hashPassword(plain), status: 'ACTIVE',
       },
     });
-    const res = await request(app).post('/auth/login').send({ email: user.email, password: plain, organizationId: orgId });
+    const res = await request(app).post('/auth/login').send({ email: user.email, password: plain });
     expect(res.status).toBe(200);
     return res.body.accessToken;
   }
@@ -76,9 +76,9 @@ describe('roles read-only matrix', () => {
     const names = res.body.map((r) => r.name).sort();
     expect(names).toEqual(['Admin', 'Agent']);
     const admin = res.body.find((r) => r.name === 'Admin');
-    expect(admin.permissions).toContainEqual({ resource: 'role', action: 'read', scope: 'ORGANIZATION' });
+    expect(admin.permissions).toEqual(expect.arrayContaining([expect.objectContaining({ resource: 'role', action: 'read', scope: 'ORGANIZATION' })]));
     const agent = res.body.find((r) => r.name === 'Agent');
-    expect(agent.permissions).toContainEqual({ resource: 'lead', action: 'read', scope: 'OWN' });
+    expect(agent.permissions).toEqual(expect.arrayContaining([expect.objectContaining({ resource: 'lead', action: 'read', scope: 'OWN' })]));
     // No cross-tenant roles leak.
     expect(res.body.every((r) => r.id)).toBe(true);
   });
@@ -93,8 +93,9 @@ describe('roles read-only matrix', () => {
     const res = await request(app).get('/roles/permissions/catalogue').set('Authorization', `Bearer ${tokenA}`);
     expect(res.status).toBe(200);
     expect(res.body.length).toBeGreaterThan(0);
-    expect(res.body).toContainEqual({ resource: 'lead', action: 'read' });
+    expect(res.body).toEqual(expect.arrayContaining([expect.objectContaining({ resource: 'lead', action: 'read' })]));
     const keys = res.body.map((p) => `${p.resource}:${p.action}`);
     expect([...keys].sort()).toEqual(keys);
+    expect(res.body.every((p) => p.id)).toBe(true);
   });
 });

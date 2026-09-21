@@ -5,6 +5,7 @@ const { loginLimiter, refreshLimiter } = require('../../middleware/rateLimiter')
 
 const router = express.Router();
 
+router.post('/signup', loginLimiter, controller.signup);
 router.post('/login', loginLimiter, controller.login);
 router.post('/refresh', refreshLimiter, controller.refresh);
 // Logout performs an unauthenticated DB write; the generous refresh bucket

@@ -64,11 +64,18 @@ describe('settings list pages follow the established contract', () => {
     expect(s).not.toContain('deactivat');
   });
 
-  test('RolesPage is read-only', () => {
+  test('RolesPage supports create and edit', () => {
     const s = src('routes', 'settings', 'RolesPage.jsx');
     expect(s).toContain('/roles');
     expect(s).toContain('/roles/permissions/catalogue');
-    expect(s).not.toMatch(/method:\s*'(POST|PATCH|PUT|DELETE)'/);
+    expect(s).toContain('/roles');
+    expect(s).toContain('/permissions');
+    expect(s).toContain('Create role');
+    expect(s).toContain('Manage permissions');
+    expect(s).toContain('role');
+    expect(s).toContain('create');
+    expect(s).toContain('update');
+    expect(s).toContain('PermissionGate');
   });
 
   test('Settings hub is deprecated — settings routes remain', () => {

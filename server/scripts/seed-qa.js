@@ -35,7 +35,7 @@ const PERMISSIONS = [
   ['requirement', 'create'], ['requirement', 'read'], ['requirement', 'update'], ['requirement', 'delete'],
   ['deal', 'create'], ['deal', 'read'], ['deal', 'update'], ['deal', 'delete'], ['deal', 'transition'],
   ['team', 'create'], ['team', 'read'], ['team', 'update'], ['team', 'delete'], ['team', 'manage_members'],
-  ['user', 'read'], ['user', 'create'], ['role', 'read'],
+  ['user', 'read'], ['user', 'create'], ['role', 'read'], ['role', 'create'], ['role', 'update'],
   ['enquiry', 'create'], ['enquiry', 'read'],
   ['organization', 'read'], ['organization', 'update'],
   ['leadSource', 'create'], ['leadSource', 'read'], ['leadSource', 'update'], ['leadSource', 'delete'],

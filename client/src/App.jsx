@@ -3,6 +3,7 @@ import RequireAuth from './auth/RequireAuth';
 import AppShell from './components/layout/AppShell';
 import { ToastViewport } from './components/ui/ToastViewport';
 import LoginPage from './routes/LoginPage';
+import SignupPage from './routes/SignupPage';
 import PlaceholderPage from './routes/PlaceholderPage';
 import EnquiriesPage from './routes/enquiries/EnquiriesPage';
 import EnquiryDetailPage from './routes/enquiries/EnquiryDetailPage';
@@ -49,6 +50,7 @@ export default function App() {
     <>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/signup" element={<SignupPage />} />
         <Route
           path="/app"
           element={

@@ -82,12 +82,27 @@ export function AuthProvider({ children }) {
   const api = useCallback((path, opts) => managerRef.current.request(path, opts), []);
 
   const login = useCallback(
-    async ({ email, password, organizationId }) => {
-      // Bootstrap call: a 401 here is bad credentials — inline error only,
-      // no refresh, no navigation (enforced by bootstrap flag + this shape).
+    async ({ email, password }) => {
       const res = await managerRef.current.request('/auth/login', {
         method: 'POST',
-        body: { email, password, organizationId },
+        body: { email, password },
+        bootstrap: true,
+        withToken: false,
+      });
+      tokenRef.current = res.accessToken;
+      managerRef.current.resetOnLogin();
+      const me = await managerRef.current.request('/auth/me', { bootstrap: true });
+      applySession({ token: res.accessToken, ...me });
+      return me;
+    },
+    [applySession]
+  );
+
+  const signup = useCallback(
+    async ({ organizationName, name, email, password, confirmPassword }) => {
+      const res = await managerRef.current.request('/auth/signup', {
+        method: 'POST',
+        body: { organizationName, name, email, password, confirmPassword },
         bootstrap: true,
         withToken: false,
       });
@@ -139,8 +154,8 @@ export function AuthProvider({ children }) {
   }, [applySession, logout]);
 
   const value = useMemo(
-    () => ({ user, organization, permissions, status, api, login, logout: logoutRemote }),
-    [user, organization, permissions, status, api, login, logoutRemote]
+    () => ({ user, organization, permissions, status, api, login, signup, logout: logoutRemote }),
+    [user, organization, permissions, status, api, login, signup, logoutRemote]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

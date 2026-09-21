@@ -8,7 +8,17 @@ const loginSchema = z.object({
   // so the boundary rejects it instead. Cap is in characters (ASCII worst
   // case); multibyte edge margin is accepted, truncation is not.
   password: z.string().min(1, 'Password required').max(72, 'Password too long'),
-  organizationId: z.string().uuid('organizationId must be a valid UUID'),
+});
+
+const signupSchema = z.object({
+  organizationName: z.string().trim().min(2, 'Organization name too short').max(100, 'Organization name too long'),
+  name: z.string().trim().min(2, 'Name too short').max(100, 'Name too long'),
+  email: z.string().email('Invalid email').trim().toLowerCase().max(100, 'Email too long'),
+  password: z.string().min(8, 'Password must be at least 8 characters').max(72, 'Password too long'),
+  confirmPassword: z.string().min(8).max(72),
+}).refine((data) => data.password === data.confirmPassword, {
+  message: 'Passwords do not match',
+  path: ['confirmPassword'],
 });
 
 const refreshSchema = z.object({
@@ -21,4 +31,4 @@ const logoutSchema = z.object({
 });
 
 
-module.exports = { loginSchema, refreshSchema, logoutSchema, validate };
+module.exports = { loginSchema, signupSchema, refreshSchema, logoutSchema, validate };

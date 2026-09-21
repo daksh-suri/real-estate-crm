@@ -53,6 +53,8 @@ const PERMISSIONS = [
   ['user', 'read'],
   ['user', 'create'],
   ['role', 'read'],
+  ['role', 'create'],
+  ['role', 'update'],
   ['enquiry', 'create'],
   ['enquiry', 'read'],
   ['organization', 'read'],
