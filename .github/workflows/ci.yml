@@ -27,7 +27,7 @@ jobs:
           --health-retries=5
 
     env:
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/real_estate_crm_test?schema=public
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/real_estate_crm_test
 
     steps:
       - name: Check out repository

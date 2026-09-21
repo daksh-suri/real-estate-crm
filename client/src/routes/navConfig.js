@@ -23,6 +23,7 @@ export const NAV_GROUPS = [
     items: [
       { label: 'Pipeline', path: '/app/deals', icon: '▭' },
       { label: 'Site Visits', path: '/app/site-visits', icon: '◷' },
+      { label: 'Calendar', path: '/app/calendar', icon: '▦' },
       { label: 'Reservations', path: '/app/reservations', icon: '⬔' },
       { label: 'Bookings', path: '/app/bookings', icon: '✔' },
       { label: 'Payments', path: '/app/payments', icon: '₹' },
@@ -46,6 +47,17 @@ export const NAV_GROUPS = [
   },
   {
     label: 'Admin',
-    items: [{ label: 'Settings', path: '/app/settings', icon: '⚙' }],
+    items: [
+      {
+        label: 'Settings',
+        icon: '⚙',
+        children: [
+          { label: 'Team', path: '/app/settings/team', icon: '○' },
+          { label: 'Roles & permissions', path: '/app/settings/roles-permissions', icon: '◈' },
+          { label: 'Lead sources', path: '/app/settings/lead-sources', icon: '✉' },
+          { label: 'Campaigns', path: '/app/settings/campaigns', icon: '✦' },
+        ],
+      },
+    ],
   },
 ];

@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import PageShell, { PageHeader } from '../../components/layout/PageShell';
-import { Button, Card, Field, Input } from '../../components/ui/controls';
+import { Button, Card, Field } from '../../components/ui/controls';
 import { Dialog, ConfirmDialog } from '../../components/ui/overlays';
 import { EmptyState, ErrorState, Skeleton, Table } from '../../components/ui/data';
-import { EntityLink, StatusBadge } from '../../components/crm/crm';
+import { EntityLink, SearchInput, StatusBadge } from '../../components/crm/crm';
 import { RelatedName, useRelatedNames } from '../../components/crm/RelatedName';
 import PermissionGate from '../../permissions/permissions';
 import { useAuth } from '../../auth/AuthContext';
@@ -12,6 +12,12 @@ import { useToast } from '../../components/ui/Toast';
 import { useApi } from '../../hooks/useApi';
 import { formatDateTime, prettifyEnum, shortId } from '../../lib/format';
 import { validLeadTransitions } from '../../lib/leadWorkflow';
+
+const ASSIGNMENT_SOURCE_LABEL = {
+  AUTO: 'Automatic',
+  MANUAL: 'Manual',
+  UNASSIGNED: 'Unassigned',
+};
 
 function Row({ label, children }) {
   return (
@@ -22,21 +28,31 @@ function Row({ label, children }) {
   );
 }
 
-function ReassignDialog({ open, onClose, leadId, onDone }) {
+function ReassignDialog({ open, onClose, leadId, lead, onDone }) {
   const { api } = useAuth();
-  const [agentId, setAgentId] = useState('');
+  const [query, setQuery] = useState('');
+  const [selected, setSelected] = useState(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState(null);
 
+  const q = query.trim();
+  const { data: candidates, error: searchError, loading: searchLoading } = useApi(
+    open && q.length >= 2 ? `/users?search=${encodeURIComponent(q)}&status=ACTIVE&limit=20&offset=0` : null,
+    { enabled: open && q.length >= 2 }
+  );
+  const { data: currentAgent } = useApi(open && lead?.assignedAgentId ? `/users/${lead.assignedAgentId}` : null, { enabled: open && !!lead?.assignedAgentId });
+
   async function onSubmit(e) {
     e.preventDefault();
-    if (pending) return;
+    if (pending || !selected) return;
     setPending(true);
     setError(null);
     try {
-      await api(`/leads/${leadId}/reassign`, { method: 'POST', body: { assignedAgentId: agentId.trim() } });
+      await api(`/leads/${leadId}/reassign`, { method: 'POST', body: { assignedAgentId: selected.id } });
       onDone();
       onClose();
+      setQuery('');
+      setSelected(null);
     } catch (err) {
       setError(err);
     } finally {
@@ -44,27 +60,73 @@ function ReassignDialog({ open, onClose, leadId, onDone }) {
     }
   }
 
+  function handleClose() {
+    if (pending) return;
+    setQuery('');
+    setSelected(null);
+    setError(null);
+    onClose();
+  }
+
   return (
     <Dialog
       open={open}
       title="Reassign lead"
-      onClose={onClose}
+      onClose={handleClose}
       actions={
         <>
-          <Button variant="ghost" onClick={onClose} disabled={pending}>Cancel</Button>
-          <Button variant="primary" onClick={onSubmit} disabled={pending}>{pending ? 'Reassigning…' : 'Reassign'}</Button>
+          <Button variant="ghost" onClick={handleClose} disabled={pending}>Cancel</Button>
+          <Button variant="primary" onClick={onSubmit} disabled={pending || !selected}>{pending ? 'Reassigning…' : 'Reassign'}</Button>
         </>
       }
     >
-      <form onSubmit={onSubmit} className="form-grid">
-        <Field
-          label="New assignee (user ID)"
-          hint="Must be an ACTIVE user in your organization. Paste the agent's user ID — a user directory is a known gap."
-        >
-          <Input value={agentId} onChange={(e) => { setAgentId(e.target.value); setError(null); }} placeholder="UUID" required />
+      <div className="form-grid">
+        <Field label="Current agent">
+          {currentAgent ? (
+            <p>{currentAgent.name} <span className="muted">· {currentAgent.email}</span> {currentAgent.teams?.length ? <span className="muted">· {currentAgent.teams.map((t) => t.name).join(', ')}</span> : null}</p>
+          ) : lead?.assignedAgentId ? (
+            <p className="muted">Loading…</p>
+          ) : (
+            <p className="muted">Unassigned — automatic round-robin will pick the next eligible agent</p>
+          )}
         </Field>
+        <Field label="New agent" hint="Search by name or email. Only ACTIVE users are listed.">
+          <SearchInput value={query} onChange={(v) => { setQuery(v); setError(null); }} placeholder="Search agents... (min 2 chars)" />
+        </Field>
+        {q.length >= 2 && (
+          <>
+            {searchLoading && <Skeleton lines={3} />}
+            {searchError && !searchLoading && <ErrorState message={searchError.message} />}
+            {!searchLoading && !searchError && (
+              <Table
+                columns={[
+                  { key: 'name', label: 'Agent', render: (u) => <span title={u.id}>{u.name}{u.id === lead?.assignedAgentId ? <span className="muted"> · current</span> : ''}</span> },
+                  { key: 'email', label: 'Email', render: (u) => <span className="muted">{u.email}</span> },
+                  { key: 'teams', label: 'Team', render: (u) => (u.teams || []).map((t) => t.name).join(', ') || <span className="muted">—</span> },
+                  {
+                    key: 'pick',
+                    label: '',
+                    render: (u) => (
+                      <Button
+                        variant={selected?.id === u.id ? 'primary' : 'ghost'}
+                        onClick={() => setSelected(u)}
+                        disabled={u.id === lead?.assignedAgentId}
+                      >
+                        {selected?.id === u.id ? 'Selected' : u.id === lead?.assignedAgentId ? 'Current' : 'Select'}
+                      </Button>
+                    ),
+                  },
+                ]}
+                rows={candidates || []}
+                rowKey={(u) => u.id}
+                empty={<EmptyState title="No matches" message="Try a different name or email." />}
+              />
+            )}
+          </>
+        )}
+        {selected && <p className="muted">Selected: {selected.name} · {selected.email}</p>}
         {error && <ErrorState message={error.message} details={error.details ? JSON.stringify(error.details) : null} />}
-      </form>
+      </div>
     </Dialog>
   );
 }
@@ -79,6 +141,7 @@ export default function LeadDetailPage() {
     { key: 'contactId', kind: 'contact' },
     { key: 'projectId', kind: 'project' },
     { key: 'originEnquiryId', kind: 'enquiry' },
+    { key: 'assignedAgentId', kind: 'user' },
   ]);
   const [reassignOpen, setReassignOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -154,8 +217,10 @@ export default function LeadDetailPage() {
             <Row label="Contact"><RelatedName kind="contact" id={lead.contactId} maps={maps} /></Row>
             <Row label="Project"><RelatedName kind="project" id={lead.projectId} maps={maps} /></Row>
             <Row label="Assignee">
-              {lead.assignedAgentId ? <span title={lead.assignedAgentId}>{shortId(lead.assignedAgentId)}</span> : <span className="muted">Unassigned</span>}
-              {lead.assignmentSource && <span className="muted"> · {prettifyEnum(lead.assignmentSource)}</span>}
+              {lead.assignedAgentId ? <RelatedName kind="user" id={lead.assignedAgentId} maps={maps} /> : <span className="muted">Unassigned</span>}
+            </Row>
+            <Row label="Source">
+              <span className="muted">{ASSIGNMENT_SOURCE_LABEL[lead.assignmentSource] || prettifyEnum(lead.assignmentSource || 'UNASSIGNED')}</span>
             </Row>
             <Row label="Origin enquiry">
               <RelatedName kind="enquiry" id={lead.originEnquiryId} maps={maps} />
@@ -187,7 +252,7 @@ export default function LeadDetailPage() {
         </Card>
       </div>
 
-      <ReassignDialog open={reassignOpen} onClose={() => setReassignOpen(false)} leadId={id} onDone={() => { retry(); push('Lead reassigned.', 'success'); }} />
+      <ReassignDialog open={reassignOpen} onClose={() => setReassignOpen(false)} leadId={id} lead={lead} onDone={() => { retry(); push('Lead reassigned.', 'success'); }} />
       <ConfirmDialog
         open={deleteOpen}
         title="Archive lead"

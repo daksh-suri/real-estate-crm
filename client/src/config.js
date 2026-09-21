@@ -7,4 +7,4 @@ if (import.meta.env.PROD && !import.meta.env.VITE_API_URL) {
 }
 export const API_BASE_URL = (import.meta.env.VITE_API_URL || 'http://localhost:5000').replace(/\/$/, '');
 
-export const APP_NAME = 'Vynexa CRM';
+export const APP_NAME = 'Vynexa';

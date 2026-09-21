@@ -33,22 +33,16 @@ import TasksPage, { TaskDetailPage } from './routes/activities/TasksPage';
 import CommunicationPage from './routes/CommunicationPage';
 import ReportsPage from './routes/reports/ReportsPage';
 import DashboardPage from './routes/dashboard/DashboardPage';
+import CalendarPage from './routes/calendar/CalendarPage';
+import TeamPage from './routes/settings/TeamPage';
+import RolesPage from './routes/settings/RolesPage';
+import LeadSourcesPage from './routes/settings/LeadSourcesPage';
+import CampaignsPage from './routes/settings/CampaignsPage';
+import AssignmentRulesPage from './routes/settings/AssignmentRulesPage';
 import './routes/slice.css';
 
-// Declared hierarchy: 17A placeholders remain for later checkpoints; 17B and
-// 17C entries below are real screens. No fake data anywhere.
-const PLACEHOLDERS = [
-  ['Admin', 'Settings', '/app/settings', 'Admin screens'],
-  ['Admin', 'Team', '/app/settings/team', 'Admin screens'],
-  ['Admin', 'Roles & permissions', '/app/settings/roles-permissions', 'Admin screens'],
-  ['Admin', 'Lead sources', '/app/settings/lead-sources', 'Admin screens'],
-  ['Admin', 'Campaigns', '/app/settings/campaigns', 'Admin screens'],
-  ['Admin', 'Assignment rules', '/app/settings/assignment-rules', 'Admin screens'],
-];
-
-function placeholderPath(full) {
-  return full.replace(/^\/app\//, '');
-}
+// Declared hierarchy: all entries below are real screens.
+// No fake data anywhere.
 
 export default function App() {
   return (
@@ -92,15 +86,16 @@ export default function App() {
           <Route path="activities" element={<ActivitiesPage />} />
           <Route path="tasks" element={<TasksPage />} />
           <Route path="tasks/:id" element={<TaskDetailPage />} />
+          <Route path="calendar" element={<CalendarPage />} />
           <Route path="communication" element={<CommunicationPage />} />
           <Route path="reports" element={<ReportsPage />} />
-          {PLACEHOLDERS.map(([eyebrow, title, full, checkpoint]) => (
-            <Route
-              key={full}
-              path={placeholderPath(full)}
-              element={<PlaceholderPage eyebrow={eyebrow} title={title} checkpoint={checkpoint} />}
-            />
-          ))}
+          <Route path="settings" element={<Navigate to="settings/team" replace />} />
+          <Route path="settings/team" element={<TeamPage />} />
+          <Route path="settings/roles-permissions" element={<RolesPage />} />
+          <Route path="settings/lead-sources" element={<LeadSourcesPage />} />
+          <Route path="settings/campaigns" element={<CampaignsPage />} />
+          {/* Hidden: backend assignment-rule infra remains intact, not advertised */}
+          <Route path="settings/assignment-rules" element={<AssignmentRulesPage />} />
         </Route>
         <Route path="/" element={<Navigate to="/app/dashboard" replace />} />
         <Route

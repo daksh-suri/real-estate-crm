@@ -27,20 +27,50 @@ function Sidebar({ collapsed, onToggle, drawerOpen, onCloseDrawer }) {
           {NAV_GROUPS.map((group) => (
             <div key={group.label} className="sidebar__group">
               {!collapsed && <p className="sidebar__group-label">{group.label}</p>}
-              {group.items.map((item) => (
-                <NavLink
-                  key={item.path}
-                  to={item.path}
-                  onClick={onCloseDrawer}
-                  className={({ isActive }) => `sidebar__link${isActive ? ' sidebar__link--active' : ''}`}
-                  title={collapsed ? item.label : undefined}
-                >
-                  <span className="sidebar__icon" aria-hidden="true">
-                    {item.icon}
-                  </span>
-                  {!collapsed && <span>{item.label}</span>}
-                </NavLink>
-              ))}
+              {group.items.map((item) => {
+                if (item.children) {
+                  return (
+                    <div key={item.label} className="sidebar__section">
+                      {!collapsed && (
+                        <p className="sidebar__section-label">
+                          <span className="sidebar__icon" aria-hidden="true">{item.icon}</span>
+                          <span>{item.label}</span>
+                        </p>
+                      )}
+                      <div className="sidebar__section-items">
+                        {item.children.map((child) => (
+                          <NavLink
+                            key={child.path}
+                            to={child.path}
+                            end
+                            onClick={onCloseDrawer}
+                            className={({ isActive }) => `sidebar__link sidebar__link--child${isActive ? ' sidebar__link--active' : ''}`}
+                            title={collapsed ? child.label : undefined}
+                          >
+                            <span className="sidebar__icon" aria-hidden="true">{child.icon}</span>
+                            {!collapsed && <span>{child.label}</span>}
+                          </NavLink>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                }
+                return (
+                  <NavLink
+                    key={item.path}
+                    to={item.path}
+                    end
+                    onClick={onCloseDrawer}
+                    className={({ isActive }) => `sidebar__link${isActive ? ' sidebar__link--active' : ''}`}
+                    title={collapsed ? item.label : undefined}
+                  >
+                    <span className="sidebar__icon" aria-hidden="true">
+                      {item.icon}
+                    </span>
+                    {!collapsed && <span>{item.label}</span>}
+                  </NavLink>
+                );
+              })}
             </div>
           ))}
         </nav>

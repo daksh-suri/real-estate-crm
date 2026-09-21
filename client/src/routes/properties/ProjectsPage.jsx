@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import PageShell, { PageHeader } from '../../components/layout/PageShell';
 import { Button, Card, Field, Input, Select } from '../../components/ui/controls';
 import { Dialog, ConfirmDialog } from '../../components/ui/overlays';
@@ -20,6 +20,15 @@ function ProjectDialog({ open, onClose, project, onSaved }) {
   const [status, setStatus] = useState(project?.status ?? 'ACTIVE');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (open) {
+      setName(project?.name ?? '');
+      setLocation(project?.location ?? '');
+      setStatus(project?.status ?? 'ACTIVE');
+      setError(null);
+    }
+  }, [open, project]);
 
   async function onSubmit(e) {
     e.preventDefault();
